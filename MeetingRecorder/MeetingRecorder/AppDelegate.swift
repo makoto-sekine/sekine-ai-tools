@@ -603,7 +603,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// - Parameter audioURL: 処理対象の音声ファイルURL
     private func startPostProcessing(audioURL: URL) {
         // 文字起こしが無効の場合は何もしない
-        guard PostProcessingSettings.shared.isTranscriptionEnabled else { return }
+        guard PostProcessingSettings.shared.isTranscriptionEnabled else {
+            print("Post-processing skipped: transcription is disabled")
+            return
+        }
+
+        print("Post-processing started for audio: \(audioURL.path)")
 
         Task {
             // 処理開始通知
@@ -619,12 +624,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // 結果を通知
             await MainActor.run {
+                if result.transcriptURL != nil {
+                    print("Post-processing transcript URL: \(result.transcriptURL!.path)")
+                }
+                if result.summaryURL != nil {
+                    print("Post-processing summary URL: \(result.summaryURL!.path)")
+                }
                 if let error = result.transcriptionError {
+                    print("Post-processing transcription error: \(error.localizedDescription)")
                     self.showNotification(
                         title: "エラー",
                         body: "文字起こし失敗: \(error.localizedDescription)"
                     )
                 } else if let error = result.summaryError {
+                    print("Post-processing summary error: \(error.localizedDescription)")
                     self.showNotification(
                         title: "処理完了",
                         body: "文字起こし完了（要約失敗: \(error.localizedDescription)）"

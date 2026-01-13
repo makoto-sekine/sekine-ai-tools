@@ -53,6 +53,10 @@ class GoogleMeetDetector {
 
     /// HTTPサーバー
     private var server: MeetingServer?
+    /// 会議終了のタイムアウト（2時間）
+    private let meetingTimeout: TimeInterval = 2 * 60 * 60
+    /// 会議終了タイムアウト用タスク
+    private var meetingTimeoutTask: DispatchWorkItem?
 
     // -------------------------------------------------------------------------
     // 自動検知の開始・停止
@@ -79,6 +83,8 @@ class GoogleMeetDetector {
 
         isEnabled = false
         currentState = .notInMeeting
+        meetingTimeoutTask?.cancel()
+        meetingTimeoutTask = nil
 
         // サーバーを停止
         server?.stop()
@@ -103,6 +109,7 @@ extension GoogleMeetDetector: MeetingServerDelegate {
         }
 
         currentState = .inMeeting(title: title)
+        scheduleMeetingTimeout()
 
         // デリゲートに通知
         DispatchQueue.main.async { [weak self] in
@@ -119,6 +126,8 @@ extension GoogleMeetDetector: MeetingServerDelegate {
         }
 
         currentState = .notInMeeting
+        meetingTimeoutTask?.cancel()
+        meetingTimeoutTask = nil
 
         // デリゲートに通知
         DispatchQueue.main.async { [weak self] in
@@ -138,5 +147,20 @@ extension GoogleMeetDetector: MeetingServerDelegate {
                 self?.delegate?.meetingTitleDidUpdate(title: title)
             }
         }
+    }
+
+    private func scheduleMeetingTimeout() {
+        meetingTimeoutTask?.cancel()
+
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard case .inMeeting = self.currentState else { return }
+
+            self.currentState = .notInMeeting
+            self.delegate?.meetingDidEnd()
+        }
+
+        meetingTimeoutTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + meetingTimeout, execute: task)
     }
 }

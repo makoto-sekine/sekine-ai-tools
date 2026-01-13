@@ -8,7 +8,7 @@ import AVFoundation
 // ファイルとして保存します。
 //
 // 【出力設定】
-// - フォーマット: M4A (AAC) / 24kHz / モノラル / 64kbps
+// - フォーマット: M4A (AAC) / 48kHz / モノラル / 64kbps
 // - ファイルサイズ目安: 約480KB/分（8KB/秒）
 //
 // 【ファイル形式の優先順位】
@@ -48,11 +48,11 @@ class AudioExporter {
     init(outputFolder: URL) {
         self.outputFolder = outputFolder
 
-        // 出力フォーマットを設定（ファイルサイズ削減のため低めの設定）
+        // 出力フォーマットを設定
         // WAV形式（非圧縮）で一時保存し、後でM4Aに変換する
         outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,  // 32ビット浮動小数点
-            sampleRate: 24000,                // 24kHz（会議録音に十分）
+            sampleRate: 48000,                // 48kHz（入力と同じにして速度劣化を防止）
             channels: 1,                      // モノラル
             interleaved: false                // 非インターリーブ
         )!

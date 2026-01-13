@@ -94,6 +94,7 @@ class PostProcessor {
         let possiblePaths = [
             "/usr/local/bin/codex",
             "/opt/homebrew/bin/codex",
+            "\(NSHomeDirectory())/.nodebrew/current/bin/codex",
             "\(NSHomeDirectory())/.local/bin/codex",
             "/usr/bin/codex"
         ]
@@ -148,6 +149,7 @@ class PostProcessor {
 
         // 文字起こしが無効の場合は何もしない
         guard settings.isTranscriptionEnabled else {
+            print("PostProcessor: transcription disabled, skipping")
             return PostProcessingResult(
                 transcriptURL: nil,
                 summaryURL: nil,
@@ -161,6 +163,7 @@ class PostProcessor {
         var transcriptionError: Error?
 
         do {
+            print("PostProcessor: transcription start for \(audioURL.path)")
             transcriptURL = try await transcribe(audioURL: audioURL)
             print("Transcription completed: \(transcriptURL?.path ?? "nil")")
         } catch {
@@ -180,6 +183,7 @@ class PostProcessor {
 
         // 要約が無効の場合は文字起こし結果のみ返す
         guard settings.isSummaryEnabled else {
+            print("PostProcessor: summary disabled, skipping")
             return PostProcessingResult(
                 transcriptURL: transcriptPath,
                 summaryURL: nil,
@@ -193,6 +197,7 @@ class PostProcessor {
         var summaryError: Error?
 
         do {
+            print("PostProcessor: summary start for transcript \(transcriptPath.path)")
             summaryURL = try await summarize(transcriptURL: transcriptPath, audioURL: audioURL)
             print("Summary completed: \(summaryURL?.path ?? "nil")")
         } catch {
@@ -217,11 +222,15 @@ class PostProcessor {
     /// - Returns: 生成された文字起こしファイルのURL
     private func transcribe(audioURL: URL) async throws -> URL {
         guard let whisperPath = findWhisperPath() else {
+            print("PostProcessor: whisper command not found")
             throw PostProcessingError.whisperNotFound
         }
 
         let outputDir = audioURL.deletingLastPathComponent().path
         let baseName = audioURL.deletingPathExtension().lastPathComponent
+
+        print("PostProcessor: whisper path \(whisperPath)")
+        print("PostProcessor: whisper output dir \(outputDir)")
 
         // whisperコマンドを実行
         let process = Process()
@@ -253,6 +262,7 @@ class PostProcessor {
             if process.terminationStatus != 0 {
                 let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
                 let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                print("PostProcessor: whisper failed: \(errorMessage)")
                 throw PostProcessingError.transcriptionFailed(errorMessage)
             }
 
@@ -262,6 +272,7 @@ class PostProcessor {
 
             // ファイルが生成されたか確認
             if !FileManager.default.fileExists(atPath: transcriptURL.path) {
+                print("PostProcessor: transcript not found at \(transcriptURL.path)")
                 throw PostProcessingError.transcriptionFailed("出力ファイルが見つかりません")
             }
 
@@ -284,12 +295,9 @@ class PostProcessor {
     ///   - audioURL: 元の音声ファイルURL（出力ファイル名の生成に使用）
     /// - Returns: 生成された要約ファイルのURL
     private func summarize(transcriptURL: URL, audioURL: URL) async throws -> URL {
-        guard let codexPath = findCodexPath() else {
-            throw PostProcessingError.codexNotFound
-        }
-
         // 文字起こしファイルを読み込む
         guard let transcriptContent = try? String(contentsOf: transcriptURL, encoding: .utf8) else {
+            print("PostProcessor: failed to read transcript \(transcriptURL.path)")
             throw PostProcessingError.fileReadFailed
         }
 
@@ -298,9 +306,16 @@ class PostProcessor {
         let summaryURL = audioURL.deletingLastPathComponent()
             .appendingPathComponent("\(baseName)_summary.md")
 
+        let codexPath = findCodexPath()
+        let useEnv = codexPath == nil
+        print("PostProcessor: codex path \(codexPath ?? "/usr/bin/env (PATH)")")
+        print("PostProcessor: summary output \(summaryURL.path)")
+
         // プロンプトを作成
         let prompt = """
 以下の会議の文字起こしをマークダウン形式で要約してください。
+ファイル保存の指示は不要です。標準出力にMarkdown本文のみを出力してください。
+前置きや説明文は書かず、本文だけを返してください。
 
 ## 出力形式
 以下の形式で要約を作成してください：
@@ -340,28 +355,51 @@ class PostProcessor {
 
         // codex execコマンドを実行
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: codexPath)
-        process.arguments = ["exec", prompt]
+        if let codexPath = codexPath {
+            process.executableURL = URL(fileURLWithPath: codexPath)
+            process.arguments = ["exec", "--skip-git-repo-check"]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["codex", "exec", "--skip-git-repo-check"]
+        }
 
         // 環境変数を設定
         var environment = ProcessInfo.processInfo.environment
         if let path = environment["PATH"] {
-            environment["PATH"] = "/usr/local/bin:/opt/homebrew/bin:\(path)"
+            let extraPaths = [
+                "/usr/local/bin",
+                "/opt/homebrew/bin",
+                "\(NSHomeDirectory())/.nodebrew/current/bin",
+                "\(NSHomeDirectory())/.local/bin",
+                "\(NSHomeDirectory())/bin",
+                "\(NSHomeDirectory())/.npm-global/bin"
+            ]
+            environment["PATH"] = (extraPaths + [path]).joined(separator: ":")
         }
         process.environment = environment
 
+        let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
+        process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
         do {
             try process.run()
+            if let inputData = prompt.data(using: .utf8) {
+                inputPipe.fileHandleForWriting.write(inputData)
+            }
+            inputPipe.fileHandleForWriting.closeFile()
             process.waitUntilExit()
 
             if process.terminationStatus != 0 {
                 let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
                 let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                print("PostProcessor: codex failed: \(errorMessage)")
+                if useEnv && errorMessage.contains("codex") && errorMessage.contains("not found") {
+                    throw PostProcessingError.codexNotFound
+                }
                 throw PostProcessingError.summaryFailed(errorMessage)
             }
 
@@ -369,6 +407,7 @@ class PostProcessor {
             let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
             guard let summaryContent = String(data: outputData, encoding: .utf8),
                   !summaryContent.isEmpty else {
+                print("PostProcessor: codex output empty")
                 throw PostProcessingError.summaryFailed("要約の出力が空です")
             }
 

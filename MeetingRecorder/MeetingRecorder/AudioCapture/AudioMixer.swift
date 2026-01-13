@@ -22,7 +22,7 @@ class AudioMixer {
     // -------------------------------------------------------------------------
 
     /// 出力する音声のフォーマット
-    /// 24kHz, モノラル, 32ビット浮動小数点（ファイルサイズ削減のため）
+    /// 48kHz, モノラル, 32ビット浮動小数点
     private let outputFormat: AVAudioFormat
 
     /// 複数スレッドからの同時アクセスを防ぐためのロック
@@ -59,13 +59,13 @@ class AudioMixer {
 
     /// 初期化処理
     init() {
-        // 出力フォーマットを設定（ファイルサイズ削減のため低めの設定）
-        // sampleRate: 24000 = 24kHz（会議録音には十分な品質）
+        // 出力フォーマットを設定
+        // sampleRate: 48000 = 48kHz（入力と同じにして速度劣化を防止）
         // channels: 1 = モノラル（ファイルサイズ半減）
         // interleaved: false = 非インターリーブ
         outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: 24000,
+            sampleRate: 48000,
             channels: 1,
             interleaved: false
         )!
