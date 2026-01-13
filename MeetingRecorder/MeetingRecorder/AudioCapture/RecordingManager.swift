@@ -33,6 +33,10 @@ class RecordingManager {
     /// 録音開始時刻（ファイル名の生成に使用）
     private var recordingStartTime: Date?
 
+    /// 現在の会議タイトル（自動検知で設定）
+    /// この値が設定されている場合、ファイル名に使用される
+    var currentMeetingTitle: String?
+
     /// 録音ファイルを保存するフォルダのURL
     /// 外部からアクセス可能（録音フォルダを開く機能で使用）
     let recordingsFolder: URL
@@ -146,7 +150,8 @@ class RecordingManager {
     // -------------------------------------------------------------------------
 
     /// 録音ファイルのファイル名を生成する
-    /// - Returns: "recording_YYYY-MM-DD_HHMMSS" 形式のファイル名
+    /// - Returns: 会議タイトルがあれば "タイトル_YYYY-MM-DD_HHMMSS" 形式、
+    ///           なければ "recording_YYYY-MM-DD_HHMMSS" 形式のファイル名
     private func generateFilename() -> String {
         // 日付をフォーマットするためのフォーマッター
         let formatter = DateFormatter()
@@ -154,6 +159,11 @@ class RecordingManager {
 
         // 録音開始時刻を文字列に変換（開始時刻がない場合は現在時刻を使用）
         let dateString = formatter.string(from: recordingStartTime ?? Date())
+
+        // 会議タイトルがあればそれを使用
+        if let meetingTitle = currentMeetingTitle, !meetingTitle.isEmpty {
+            return "\(meetingTitle)_\(dateString)"
+        }
 
         return "recording_\(dateString)"
     }

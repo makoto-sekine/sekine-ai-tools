@@ -221,11 +221,8 @@ private class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
         case .screen:
             // 映像データは無視（音声キャプチャのみ使用）
             break
-        case .microphone:
-            // マイクデータは無視（別クラスで処理）
-            break
         @unknown default:
-            // 将来追加される可能性のある種類に対応
+            // マイクデータや将来追加される可能性のある種類は無視
             break
         }
     }

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 // =============================================================================
 // AppDelegate - アプリケーションのメインクラス
@@ -29,6 +30,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// 録音時間を更新するためのタイマー
     private var timer: Timer?
 
+    /// Google Meet自動検知クラス
+    private var googleMeetDetector: GoogleMeetDetector!
+
+    /// 自動検知が有効かどうか（UserDefaultsに保存）
+    private var isAutoDetectionEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "isAutoDetectionEnabled") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "isAutoDetectionEnabled")
+            updateAutoDetection()
+        }
+    }
+
+    /// 自動検知で録音が開始されたかどうか
+    private var isAutoRecording: Bool = false
+
+    /// 検知中の会議タイトル（通知から録音開始する際に使用）
+    private var pendingMeetingTitle: String?
+
+    /// 通知カテゴリID
+    private let meetingDetectedCategoryId = "MEETING_DETECTED"
+    private let startRecordingActionId = "START_RECORDING"
+
     // -------------------------------------------------------------------------
     // アプリケーション起動時の処理
     // -------------------------------------------------------------------------
@@ -42,8 +65,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 録音マネージャーを初期化
         recordingManager = RecordingManager()
 
+        // 通知の設定
+        setupNotifications()
+
+        // Google Meet検知を初期化
+        googleMeetDetector = GoogleMeetDetector()
+        googleMeetDetector.delegate = self
+
+        // 前回の設定を復元（自動検知が有効だった場合は開始）
+        if isAutoDetectionEnabled {
+            googleMeetDetector.startDetection()
+        }
+
         // メニューバーにアイコンを設置
         setupStatusItem()
+    }
+
+    // -------------------------------------------------------------------------
+    // 通知のセットアップ
+    // -------------------------------------------------------------------------
+
+    /// 通知センターの設定を行う
+    private func setupNotifications() {
+        // バンドル識別子の確認（デバッグ用）
+        if Bundle.main.bundleIdentifier == nil {
+            print("Warning: Bundle identifier is nil. Notifications may not work properly.")
+            print("Consider building with Xcode or creating a proper .app bundle.")
+            return
+        }
+
+        // 少し遅延してから通知を設定（バンドルの初期化を待つ）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.configureNotificationCenter()
+        }
+    }
+
+    /// 通知センターの実際の設定
+    private func configureNotificationCenter() {
+        let center = UNUserNotificationCenter.current()
+
+        // デリゲートを設定
+        center.delegate = self
+
+        // 通知権限をリクエスト
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if let error = error {
+                print("Notification authorization error: \(error)")
+            }
+            print("Notification authorization granted: \(granted)")
+        }
+
+        // 「録音開始」アクションを定義
+        let startAction = UNNotificationAction(
+            identifier: startRecordingActionId,
+            title: "録音開始",
+            options: [.foreground]
+        )
+
+        // カテゴリを定義（会議検知通知用）
+        let meetingCategory = UNNotificationCategory(
+            identifier: meetingDetectedCategoryId,
+            actions: [startAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        center.setNotificationCategories([meetingCategory])
     }
 
     // -------------------------------------------------------------------------
@@ -117,6 +204,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // セパレーター（区切り線）を追加
         menu.addItem(NSMenuItem.separator())
 
+        // ----- 自動検知セクション -----
+
+        // 自動検知のON/OFFトグル（ショートカットキー: Cmd+D）
+        let autoDetectItem = NSMenuItem(
+            title: isAutoDetectionEnabled ? "自動検知: ON" : "自動検知: OFF",
+            action: #selector(toggleAutoDetection),
+            keyEquivalent: "d"
+        )
+        autoDetectItem.target = self
+        if isAutoDetectionEnabled {
+            autoDetectItem.state = .on
+        }
+        menu.addItem(autoDetectItem)
+
+        // 検知中の会議タイトルを表示（自動検知が有効で会議中の場合）
+        if isAutoDetectionEnabled {
+            if case .inMeeting(let title) = googleMeetDetector.currentState {
+                let meetingStatusItem = NSMenuItem(
+                    title: "  検知中: \(title)",
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                meetingStatusItem.attributedTitle = NSAttributedString(
+                    string: "  検知中: \(title)",
+                    attributes: [.foregroundColor: NSColor.secondaryLabelColor]
+                )
+                menu.addItem(meetingStatusItem)
+            }
+        }
+
+        // セパレーター（区切り線）を追加
+        menu.addItem(NSMenuItem.separator())
+
         // 録音フォルダを開くボタン（ショートカットキー: Cmd+O）
         let openFolderItem = NSMenuItem(title: "録音フォルダを開く", action: #selector(openRecordingsFolder), keyEquivalent: "o")
         openFolderItem.target = self
@@ -180,6 +300,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 会議タイトル付きで録音を開始する（自動検知用）
+    private func startRecordingWithMeetingTitle(_ title: String) {
+        // 会議タイトルをRecordingManagerに設定
+        recordingManager.currentMeetingTitle = title
+        isAutoRecording = true
+        startRecording()
+    }
+
     /// 録音を停止する
     private func stopRecording() {
         // Task: 非同期処理を実行するためのブロック
@@ -201,6 +329,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         title: "録音完了",
                         body: "保存先: \(url.lastPathComponent)"
                     )
+                }
+
+                // 自動録音の状態をリセット
+                if self.isAutoRecording {
+                    self.isAutoRecording = false
+                    self.recordingManager.currentMeetingTitle = nil
                 }
             }
         }
@@ -282,16 +416,86 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // 通知とアラート
     // -------------------------------------------------------------------------
 
-    /// ユーザーに通知を表示する
+    /// ユーザーに通知を表示する（シンプル通知）
     /// - Parameters:
     ///   - title: 通知のタイトル
     ///   - body: 通知の本文
     private func showNotification(title: String, body: String) {
-        let notification = NSUserNotification()
-        notification.title = title
-        notification.informativeText = body
-        notification.soundName = NSUserNotificationDefaultSoundName  // 通知音を鳴らす
-        NSUserNotificationCenter.default.deliver(notification)
+        // バンドル識別子がない場合はログ出力のみ
+        guard Bundle.main.bundleIdentifier != nil else {
+            print("[\(title)] \(body)")
+            return
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil  // 即座に表示
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Notification error: \(error)")
+            }
+        }
+    }
+
+    /// 会議検知通知を表示する（アクション付き）
+    /// - Parameter title: 検知された会議タイトル
+    private func showMeetingDetectedNotification(title: String) {
+        // バンドル識別子がない場合はアラートダイアログで代替
+        guard Bundle.main.bundleIdentifier != nil else {
+            DispatchQueue.main.async {
+                self.showMeetingDetectedAlert(title: title)
+            }
+            return
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Google Meet検知"
+        content.body = "「\(title)」に参加中です。録音しますか？"
+        content.sound = .default
+        content.categoryIdentifier = meetingDetectedCategoryId
+
+        // 会議タイトルを通知に保存
+        content.userInfo = ["meetingTitle": title]
+
+        let request = UNNotificationRequest(
+            identifier: "meeting-detected-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Meeting notification error: \(error)")
+                // 通知が失敗した場合はアラートで代替
+                DispatchQueue.main.async {
+                    self.showMeetingDetectedAlert(title: title)
+                }
+            }
+        }
+    }
+
+    /// 会議検知時のアラートダイアログを表示する（通知のフォールバック）
+    /// - Parameter title: 検知された会議タイトル
+    private func showMeetingDetectedAlert(title: String) {
+        let alert = NSAlert()
+        alert.messageText = "Google Meet検知"
+        alert.informativeText = "「\(title)」に参加中です。録音しますか？"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "録音開始")
+        alert.addButton(withTitle: "キャンセル")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            startRecordingWithMeetingTitle(title)
+        }
     }
 
     /// エラーアラートを表示する
@@ -304,5 +508,132 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.runModal()  // モーダル表示（ユーザーが閉じるまで待機）
+    }
+
+    // -------------------------------------------------------------------------
+    // 自動検知の管理
+    // -------------------------------------------------------------------------
+
+    /// 自動検知の状態を更新する
+    private func updateAutoDetection() {
+        if isAutoDetectionEnabled {
+            googleMeetDetector.startDetection()
+        } else {
+            googleMeetDetector.stopDetection()
+        }
+        updateMenu()
+    }
+
+    /// 自動検知のON/OFFを切り替える
+    @objc private func toggleAutoDetection() {
+        isAutoDetectionEnabled.toggle()
+    }
+}
+
+// =============================================================================
+// UNUserNotificationCenterDelegate - 通知のデリゲート実装
+// =============================================================================
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+
+    /// 通知がフォアグラウンドで表示される時に呼ばれる
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        // フォアグラウンドでも通知を表示
+        completionHandler([.banner, .sound])
+    }
+
+    /// 通知のアクションが実行された時に呼ばれる
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let actionId = response.actionIdentifier
+        let userInfo = response.notification.request.content.userInfo
+
+        switch actionId {
+        case startRecordingActionId:
+            // 「録音開始」ボタンが押された
+            if let meetingTitle = userInfo["meetingTitle"] as? String {
+                DispatchQueue.main.async {
+                    self.startRecordingWithMeetingTitle(meetingTitle)
+                }
+            }
+
+        case UNNotificationDefaultActionIdentifier:
+            // 通知自体がクリックされた（アクションボタン以外）
+            if let meetingTitle = userInfo["meetingTitle"] as? String {
+                DispatchQueue.main.async {
+                    self.startRecordingWithMeetingTitle(meetingTitle)
+                }
+            }
+
+        default:
+            break
+        }
+
+        completionHandler()
+    }
+}
+
+// =============================================================================
+// GoogleMeetDetectorDelegate - 会議検知のデリゲート実装
+// =============================================================================
+
+extension AppDelegate: GoogleMeetDetectorDelegate {
+
+    /// 会議が開始された時に呼ばれる
+    /// - Parameter title: 検知された会議タイトル
+    func meetingDidStart(title: String) {
+        // 既に録音中の場合は何もしない
+        guard !isRecording else { return }
+
+        // 検知中の会議タイトルを保存
+        pendingMeetingTitle = title
+
+        // 通知を表示（ユーザーに録音開始を促す）
+        showMeetingDetectedNotification(title: title)
+
+        // メニューを更新（検知中の表示）
+        DispatchQueue.main.async {
+            self.updateMenu()
+        }
+    }
+
+    /// 会議が終了した時に呼ばれる
+    func meetingDidEnd() {
+        // 検知中の会議タイトルをクリア
+        pendingMeetingTitle = nil
+
+        // 自動録音中の場合のみ停止
+        if isAutoRecording {
+            stopRecording()
+        }
+
+        // メニューを更新
+        DispatchQueue.main.async {
+            self.updateMenu()
+        }
+    }
+
+    /// 会議タイトルが更新された時に呼ばれる
+    func meetingTitleDidUpdate(title: String) {
+        // 録音中の場合はタイトルを更新
+        if isAutoRecording {
+            recordingManager.currentMeetingTitle = title
+            print("Recording title updated: \(title)")
+        }
+
+        // 検知中のタイトルも更新
+        pendingMeetingTitle = title
+
+        // メニューを更新
+        DispatchQueue.main.async {
+            self.updateMenu()
+        }
     }
 }
