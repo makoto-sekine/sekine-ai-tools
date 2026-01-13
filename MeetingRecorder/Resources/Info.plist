@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ja</string>
+    <key>CFBundleExecutable</key>
+    <string>MeetingRecorder</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.MeetingRecorder</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>MeetingRecorder</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ミーティングの録音にマイクへのアクセスが必要です。</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>システム音声の録音に画面収録の権限が必要です。</string>
+</dict>
+</plist>
