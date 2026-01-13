@@ -52,6 +52,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let meetingDetectedCategoryId = "MEETING_DETECTED"
     private let startRecordingActionId = "START_RECORDING"
 
+    /// 録音後処理（文字起こし・要約）
+    private let postProcessor = PostProcessor()
+
     // -------------------------------------------------------------------------
     // アプリケーション起動時の処理
     // -------------------------------------------------------------------------
@@ -237,6 +240,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // セパレーター（区切り線）を追加
         menu.addItem(NSMenuItem.separator())
 
+        // ----- 後処理設定セクション -----
+
+        let settings = PostProcessingSettings.shared
+
+        // 文字起こしのON/OFFトグル（ショートカットキー: Cmd+T）
+        let transcriptionItem = NSMenuItem(
+            title: settings.isTranscriptionEnabled ? "文字起こし: ON" : "文字起こし: OFF",
+            action: #selector(toggleTranscription),
+            keyEquivalent: "t"
+        )
+        transcriptionItem.target = self
+        if settings.isTranscriptionEnabled {
+            transcriptionItem.state = .on
+        }
+        menu.addItem(transcriptionItem)
+
+        // 要約のON/OFFトグル（ショートカットキー: Cmd+Y）
+        // 文字起こしがOFFの場合はグレーアウト
+        let summaryItem = NSMenuItem(
+            title: settings.isSummaryEnabled ? "  要約: ON" : "  要約: OFF",
+            action: #selector(toggleSummary),
+            keyEquivalent: "y"
+        )
+        summaryItem.target = self
+        if settings.isSummaryEnabled {
+            summaryItem.state = .on
+        }
+        // 文字起こしが無効の場合は選択不可
+        summaryItem.isEnabled = settings.isTranscriptionEnabled
+        if !settings.isTranscriptionEnabled {
+            summaryItem.attributedTitle = NSAttributedString(
+                string: "  要約: OFF",
+                attributes: [.foregroundColor: NSColor.disabledControlTextColor]
+            )
+        }
+        menu.addItem(summaryItem)
+
+        // セパレーター（区切り線）を追加
+        menu.addItem(NSMenuItem.separator())
+
         // 録音フォルダを開くボタン（ショートカットキー: Cmd+O）
         let openFolderItem = NSMenuItem(title: "録音フォルダを開く", action: #selector(openRecordingsFolder), keyEquivalent: "o")
         openFolderItem.target = self
@@ -329,6 +372,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         title: "録音完了",
                         body: "保存先: \(url.lastPathComponent)"
                     )
+
+                    // 後処理（文字起こし・要約）を開始
+                    self.startPostProcessing(audioURL: url)
                 }
 
                 // 自動録音の状態をリセット
@@ -527,6 +573,77 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// 自動検知のON/OFFを切り替える
     @objc private func toggleAutoDetection() {
         isAutoDetectionEnabled.toggle()
+    }
+
+    // -------------------------------------------------------------------------
+    // 後処理設定のトグル
+    // -------------------------------------------------------------------------
+
+    /// 文字起こしのON/OFFを切り替える
+    @objc private func toggleTranscription() {
+        let settings = PostProcessingSettings.shared
+        settings.isTranscriptionEnabled.toggle()
+        updateMenu()
+    }
+
+    /// 要約のON/OFFを切り替える
+    @objc private func toggleSummary() {
+        let settings = PostProcessingSettings.shared
+        // 文字起こしが無効の場合は何もしない
+        guard settings.isTranscriptionEnabled else { return }
+        settings.isSummaryEnabled.toggle()
+        updateMenu()
+    }
+
+    // -------------------------------------------------------------------------
+    // 録音後処理
+    // -------------------------------------------------------------------------
+
+    /// 録音終了後の処理（文字起こし・要約）を開始
+    /// - Parameter audioURL: 処理対象の音声ファイルURL
+    private func startPostProcessing(audioURL: URL) {
+        // 文字起こしが無効の場合は何もしない
+        guard PostProcessingSettings.shared.isTranscriptionEnabled else { return }
+
+        Task {
+            // 処理開始通知
+            await MainActor.run {
+                self.showNotification(
+                    title: "処理中",
+                    body: "文字起こしを実行中..."
+                )
+            }
+
+            // 後処理を実行
+            let result = await postProcessor.process(audioURL: audioURL)
+
+            // 結果を通知
+            await MainActor.run {
+                if let error = result.transcriptionError {
+                    self.showNotification(
+                        title: "エラー",
+                        body: "文字起こし失敗: \(error.localizedDescription)"
+                    )
+                } else if let error = result.summaryError {
+                    self.showNotification(
+                        title: "処理完了",
+                        body: "文字起こし完了（要約失敗: \(error.localizedDescription)）"
+                    )
+                } else if result.transcriptURL != nil {
+                    if result.summaryURL != nil {
+                        self.showNotification(
+                            title: "処理完了",
+                            body: "文字起こし・要約が完了しました"
+                        )
+                    } else {
+                        self.showNotification(
+                            title: "処理完了",
+                            body: "文字起こしが完了しました"
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
