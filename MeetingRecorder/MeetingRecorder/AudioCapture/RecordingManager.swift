@@ -37,27 +37,18 @@ class RecordingManager {
     /// この値が設定されている場合、ファイル名に使用される
     var currentMeetingTitle: String?
 
-    /// 録音ファイルを保存するフォルダのURL
-    /// 外部からアクセス可能（録音フォルダを開く機能で使用）
-    let recordingsFolder: URL
+    /// ベースフォルダ（録音フォルダを開く時に使用）
+    var baseFolder: URL {
+        return QueueManager.shared.baseFolder
+    }
 
     // -------------------------------------------------------------------------
     // 初期化
     // -------------------------------------------------------------------------
 
     /// 初期化処理
-    /// 録音ファイルを保存するフォルダを作成する
     init() {
-        // ドキュメントフォルダのパスを取得
-        // FileManager.defaultはファイル操作を行うシングルトンオブジェクト
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-
-        // 「MeetingRecordings」というサブフォルダを作成
-        recordingsFolder = documentsPath.appendingPathComponent("MeetingRecordings")
-
-        // フォルダが存在しない場合は作成
-        // try? はエラーを無視する（フォルダが既に存在する場合など）
-        try? FileManager.default.createDirectory(at: recordingsFolder, withIntermediateDirectories: true)
+        // QueueManagerがフォルダを作成するので、ここでは何もしない
     }
 
     // -------------------------------------------------------------------------
@@ -78,7 +69,7 @@ class RecordingManager {
         systemAudioCapture = SystemAudioCapture()
         microphoneCapture = MicrophoneCapture()
         audioMixer = AudioMixer()
-        audioExporter = AudioExporter(outputFolder: recordingsFolder)
+        audioExporter = AudioExporter()
 
         // システム音声がキャプチャされた時のコールバックを設定
         // クロージャ内で self を使う場合は [weak self] でメモリリークを防ぐ

@@ -52,9 +52,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let meetingDetectedCategoryId = "MEETING_DETECTED"
     private let startRecordingActionId = "START_RECORDING"
 
-    /// 録音後処理（文字起こし・要約）
-    private let postProcessor = PostProcessor()
-
     // -------------------------------------------------------------------------
     // アプリケーション起動時の処理
     // -------------------------------------------------------------------------
@@ -280,6 +277,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // セパレーター（区切り線）を追加
         menu.addItem(NSMenuItem.separator())
 
+        // キュー管理画面を開くボタン（ショートカットキー: Cmd+L）
+        let queueItem = NSMenuItem(title: "キュー管理", action: #selector(openQueueWindow), keyEquivalent: "l")
+        queueItem.target = self
+        menu.addItem(queueItem)
+
         // 録音フォルダを開くボタン（ショートカットキー: Cmd+O）
         let openFolderItem = NSMenuItem(title: "録音フォルダを開く", action: #selector(openRecordingsFolder), keyEquivalent: "o")
         openFolderItem.target = self
@@ -373,6 +375,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         body: "保存先: \(url.lastPathComponent)"
                     )
 
+                    // キューを更新
+                    QueueManager.shared.refreshQueue()
+
                     // 後処理（文字起こし・要約）を開始
                     self.startPostProcessing(audioURL: url)
                 }
@@ -443,9 +448,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // その他のアクション
     // -------------------------------------------------------------------------
 
+    /// キュー管理画面を開く
+    @objc private func openQueueWindow() {
+        QueueWindowController.shared.show()
+    }
+
     /// 録音フォルダをFinderで開く
     @objc private func openRecordingsFolder() {
-        let folderURL = recordingManager.recordingsFolder
+        let folderURL = recordingManager.baseFolder
         NSWorkspace.shared.open(folderURL)
     }
 
@@ -599,7 +609,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // 録音後処理
     // -------------------------------------------------------------------------
 
-    /// 録音終了後の処理（文字起こし・要約）を開始
+    /// 録音終了後の処理（文字起こし・要約）をキューに追加
     /// - Parameter audioURL: 処理対象の音声ファイルURL
     private func startPostProcessing(audioURL: URL) {
         // 文字起こしが無効の場合は何もしない
@@ -608,55 +618,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        print("Post-processing started for audio: \(audioURL.path)")
+        print("Post-processing enqueued for audio: \(audioURL.path)")
 
-        Task {
-            // 処理開始通知
-            await MainActor.run {
-                self.showNotification(
-                    title: "処理中",
-                    body: "文字起こしを実行中..."
-                )
-            }
+        // 処理キューに追加（順番に処理される）
+        QueueManager.shared.enqueueForProcessing(audioURL: audioURL)
 
-            // 後処理を実行
-            let result = await postProcessor.process(audioURL: audioURL)
-
-            // 結果を通知
-            await MainActor.run {
-                if result.transcriptURL != nil {
-                    print("Post-processing transcript URL: \(result.transcriptURL!.path)")
-                }
-                if result.summaryURL != nil {
-                    print("Post-processing summary URL: \(result.summaryURL!.path)")
-                }
-                if let error = result.transcriptionError {
-                    print("Post-processing transcription error: \(error.localizedDescription)")
-                    self.showNotification(
-                        title: "エラー",
-                        body: "文字起こし失敗: \(error.localizedDescription)"
-                    )
-                } else if let error = result.summaryError {
-                    print("Post-processing summary error: \(error.localizedDescription)")
-                    self.showNotification(
-                        title: "処理完了",
-                        body: "文字起こし完了（要約失敗: \(error.localizedDescription)）"
-                    )
-                } else if result.transcriptURL != nil {
-                    if result.summaryURL != nil {
-                        self.showNotification(
-                            title: "処理完了",
-                            body: "文字起こし・要約が完了しました"
-                        )
-                    } else {
-                        self.showNotification(
-                            title: "処理完了",
-                            body: "文字起こしが完了しました"
-                        )
-                    }
-                }
-            }
-        }
+        // 処理開始通知
+        showNotification(
+            title: "処理待ち",
+            body: "キューに追加されました"
+        )
     }
 }
 

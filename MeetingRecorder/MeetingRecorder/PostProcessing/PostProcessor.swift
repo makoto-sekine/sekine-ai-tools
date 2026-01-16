@@ -198,7 +198,8 @@ class PostProcessor {
 
         do {
             print("PostProcessor: summary start for transcript \(transcriptPath.path)")
-            summaryURL = try await summarize(transcriptURL: transcriptPath, audioURL: audioURL)
+            let baseName = audioURL.deletingPathExtension().lastPathComponent
+            summaryURL = try await summarize(transcriptURL: transcriptPath, baseName: baseName, outputFolder: nil)
             print("Summary completed: \(summaryURL?.path ?? "nil")")
         } catch {
             summaryError = error
@@ -214,19 +215,44 @@ class PostProcessor {
     }
 
     // -------------------------------------------------------------------------
+    // 公開メソッド（キューマネージャーから使用）
+    // -------------------------------------------------------------------------
+
+    /// 文字起こしのみを実行（指定されたフォルダに出力）
+    /// - Parameters:
+    ///   - audioURL: 処理対象の音声ファイルURL
+    ///   - outputFolder: 出力先フォルダ
+    /// - Returns: 生成された文字起こしファイルのURL
+    func transcribeOnly(audioURL: URL, outputFolder: URL) async throws -> URL {
+        return try await transcribe(audioURL: audioURL, outputFolder: outputFolder)
+    }
+
+    /// 要約のみを実行（指定されたフォルダに出力）
+    /// - Parameters:
+    ///   - transcriptURL: 文字起こしファイルのURL
+    ///   - baseName: ベースファイル名（拡張子なし）
+    ///   - outputFolder: 出力先フォルダ
+    /// - Returns: 生成された要約ファイルのURL
+    func summarizeOnly(transcriptURL: URL, baseName: String, outputFolder: URL) async throws -> URL {
+        return try await summarize(transcriptURL: transcriptURL, baseName: baseName, outputFolder: outputFolder)
+    }
+
+    // -------------------------------------------------------------------------
     // 文字起こし処理
     // -------------------------------------------------------------------------
 
     /// whisperコマンドを使用して音声を文字起こし
-    /// - Parameter audioURL: 処理対象の音声ファイルURL
+    /// - Parameters:
+    ///   - audioURL: 処理対象の音声ファイルURL
+    ///   - outputFolder: 出力先フォルダ（省略時は音声ファイルと同じフォルダ）
     /// - Returns: 生成された文字起こしファイルのURL
-    private func transcribe(audioURL: URL) async throws -> URL {
+    private func transcribe(audioURL: URL, outputFolder: URL? = nil) async throws -> URL {
         guard let whisperPath = findWhisperPath() else {
             print("PostProcessor: whisper command not found")
             throw PostProcessingError.whisperNotFound
         }
 
-        let outputDir = audioURL.deletingLastPathComponent().path
+        let outputDir = (outputFolder ?? audioURL.deletingLastPathComponent()).path
         let baseName = audioURL.deletingPathExtension().lastPathComponent
 
         print("PostProcessor: whisper path \(whisperPath)")
@@ -267,7 +293,7 @@ class PostProcessor {
             }
 
             // whisperは自動的に .txt ファイルを生成する
-            let transcriptURL = audioURL.deletingLastPathComponent()
+            let transcriptURL = (outputFolder ?? audioURL.deletingLastPathComponent())
                 .appendingPathComponent("\(baseName).txt")
 
             // ファイルが生成されたか確認
@@ -292,28 +318,34 @@ class PostProcessor {
     /// codex execコマンドを使用して文字起こしを要約
     /// - Parameters:
     ///   - transcriptURL: 文字起こしファイルのURL
-    ///   - audioURL: 元の音声ファイルURL（出力ファイル名の生成に使用）
+    ///   - baseName: ベースファイル名（拡張子なし、省略時は文字起こしファイルから取得）
+    ///   - outputFolder: 出力先フォルダ（省略時は文字起こしファイルと同じフォルダ）
     /// - Returns: 生成された要約ファイルのURL
-    private func summarize(transcriptURL: URL, audioURL: URL) async throws -> URL {
-        // 文字起こしファイルを読み込む
-        guard let transcriptContent = try? String(contentsOf: transcriptURL, encoding: .utf8) else {
-            print("PostProcessor: failed to read transcript \(transcriptURL.path)")
-            throw PostProcessingError.fileReadFailed
-        }
-
+    private func summarize(transcriptURL: URL, baseName: String? = nil, outputFolder: URL? = nil) async throws -> URL {
         // 出力ファイルのパスを生成
-        let baseName = audioURL.deletingPathExtension().lastPathComponent
-        let summaryURL = audioURL.deletingLastPathComponent()
-            .appendingPathComponent("\(baseName)_summary.md")
+        let actualBaseName = baseName ?? transcriptURL.deletingPathExtension().lastPathComponent
+        let summaryURL = (outputFolder ?? transcriptURL.deletingLastPathComponent())
+            .appendingPathComponent("\(actualBaseName)_summary.md")
+
+        // カレントディレクトリとして設定するフォルダ（文字起こしファイルのフォルダ）
+        let workingDirectory = transcriptURL.deletingLastPathComponent()
+
+        // 相対パスで文字起こしファイルを参照
+        let transcriptFileName = transcriptURL.lastPathComponent
 
         let codexPath = findCodexPath()
         let useEnv = codexPath == nil
         print("PostProcessor: codex path \(codexPath ?? "/usr/bin/env (PATH)")")
+        print("PostProcessor: working directory \(workingDirectory.path)")
+        print("PostProcessor: transcript file \(transcriptFileName)")
         print("PostProcessor: summary output \(summaryURL.path)")
 
         // プロンプトを作成
         let prompt = """
-以下の会議の文字起こしをマークダウン形式で要約してください。
+カレントディレクトリにある「\(transcriptFileName)」ファイルを読み込んでください。
+このファイルには、会議の音声を自動文字起こししたデータが含まれています。
+複数の話者による会話が混在している可能性があるため、内容を適切に解釈し、マークダウン形式で要約してください。
+
 ファイル保存の指示は不要です。標準出力にMarkdown本文のみを出力してください。
 前置きや説明文は書かず、本文だけを返してください。
 
@@ -323,14 +355,18 @@ class PostProcessor {
 # 会議要約
 
 ## 概要
-（会議の概要を1-2文で）
+（会議全体の概要を1-2文で）
 
-## 参加者（推定）
-- （発言から推定される参加者）
+## 議事録
+話し合われた内容を話題ごとにまとめてください。
+後で見返した時にどんな会話が行われたか思い出せるように、適切な粒度で過不足なく記載してください。
 
-## 議題
-1. （議題1）
-2. （議題2）
+### （話題1のタイトル）
+- （話題1の内容）
+
+### （話題2のタイトル）
+- （話題2の内容）
+
 ...
 
 ## 決定事項
@@ -338,19 +374,14 @@ class PostProcessor {
 - （決定事項2）
 ...
 
+（決定事項がない場合はこのセクション全体を省略してください）
+
 ## アクションアイテム
 - [ ] （担当者）: （タスク内容）
 - [ ] （担当者）: （タスク内容）
 ...
 
-## 次回の予定
-（あれば記載）
-
----
-
-## 文字起こし内容
-
-\(transcriptContent)
+（アクションアイテムがない場合はこのセクション全体を省略してください）
 """
 
         // codex execコマンドを実行
@@ -362,6 +393,9 @@ class PostProcessor {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = ["codex", "exec", "--skip-git-repo-check"]
         }
+
+        // カレントディレクトリを設定（文字起こしファイルのあるフォルダ）
+        process.currentDirectoryURL = workingDirectory
 
         // 環境変数を設定
         var environment = ProcessInfo.processInfo.environment

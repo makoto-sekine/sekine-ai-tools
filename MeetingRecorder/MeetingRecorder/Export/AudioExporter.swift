@@ -23,9 +23,6 @@ class AudioExporter {
     // プロパティ
     // -------------------------------------------------------------------------
 
-    /// 録音ファイルを保存するフォルダ
-    private let outputFolder: URL
-
     /// 録音中の音声ファイル
     /// AVAudioFile: 音声ファイルを読み書きするためのクラス
     private var audioFile: AVAudioFile?
@@ -44,10 +41,7 @@ class AudioExporter {
     // -------------------------------------------------------------------------
 
     /// 初期化処理
-    /// - Parameter outputFolder: 録音ファイルを保存するフォルダ
-    init(outputFolder: URL) {
-        self.outputFolder = outputFolder
-
+    init() {
         // 出力フォーマットを設定
         // WAV形式（非圧縮）で一時保存し、後でM4Aに変換する
         outputFormat = AVAudioFormat(
@@ -114,7 +108,7 @@ class AudioExporter {
     // -------------------------------------------------------------------------
 
     /// 録音を停止し、ファイルを変換して保存する
-    /// - Parameter filename: 保存するファイル名（拡張子なし）
+    /// - Parameter filename: 保存するファイル名（拡張子なし）= フォルダ名
     /// - Returns: 保存されたファイルのURL（失敗した場合はnil）
     func stopRecording(filename: String) async -> URL? {
         lock.lock()
@@ -130,15 +124,18 @@ class AudioExporter {
 
         lock.unlock()
 
-        // ファイル形式を変換
+        // ID用のフォルダを作成（QueueManagerから取得）
+        let itemFolder = QueueManager.shared.createItemFolder(for: filename)
+
+        // ファイル形式を変換（フォルダ内に出力）
         let finalURL: URL?
 
         if isFFmpegAvailable() {
             // ffmpegがあればMP3に変換（高圧縮・高互換性）
-            finalURL = await convertToMP3(inputURL: tempURL, filename: filename)
+            finalURL = await convertToMP3(inputURL: tempURL, filename: filename, outputFolder: itemFolder)
         } else {
             // ffmpegがなければM4Aに変換（Appleの標準形式）
-            finalURL = await convertToM4A(inputURL: tempURL, filename: filename)
+            finalURL = await convertToM4A(inputURL: tempURL, filename: filename, outputFolder: itemFolder)
         }
 
         // 一時ファイルを削除
@@ -181,8 +178,9 @@ class AudioExporter {
     /// - Parameters:
     ///   - inputURL: 入力ファイル（WAV）
     ///   - filename: 出力ファイル名（拡張子なし）
+    ///   - outputFolder: 出力先フォルダ
     /// - Returns: 変換後のファイルURL（失敗した場合はnil）
-    private func convertToMP3(inputURL: URL, filename: String) async -> URL? {
+    private func convertToMP3(inputURL: URL, filename: String, outputFolder: URL) async -> URL? {
         let outputURL = outputFolder.appendingPathComponent("\(filename).mp3")
 
         // 既存ファイルがあれば削除
@@ -229,12 +227,12 @@ class AudioExporter {
             } else {
                 print("FFmpeg conversion failed")
                 // 失敗した場合はM4Aにフォールバック
-                return await convertToM4A(inputURL: inputURL, filename: filename)
+                return await convertToM4A(inputURL: inputURL, filename: filename, outputFolder: outputFolder)
             }
         } catch {
             print("FFmpeg error: \(error)")
             // エラーの場合はM4Aにフォールバック
-            return await convertToM4A(inputURL: inputURL, filename: filename)
+            return await convertToM4A(inputURL: inputURL, filename: filename, outputFolder: outputFolder)
         }
     }
 
@@ -247,8 +245,9 @@ class AudioExporter {
     /// - Parameters:
     ///   - inputURL: 入力ファイル（WAV）
     ///   - filename: 出力ファイル名（拡張子なし）
+    ///   - outputFolder: 出力先フォルダ
     /// - Returns: 変換後のファイルURL（失敗した場合はnil）
-    private func convertToM4A(inputURL: URL, filename: String) async -> URL? {
+    private func convertToM4A(inputURL: URL, filename: String, outputFolder: URL) async -> URL? {
         let outputURL = outputFolder.appendingPathComponent("\(filename).m4a")
 
         // 既存ファイルがあれば削除
@@ -261,7 +260,7 @@ class AudioExporter {
             // 音声トラックを取得
             guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
                 print("No audio track found")
-                return copyAsWAV(inputURL: inputURL, filename: filename)
+                return copyAsWAV(inputURL: inputURL, filename: filename, outputFolder: outputFolder)
             }
 
             // AVAssetReader: 音声ファイルを読み込むためのクラス
@@ -327,12 +326,12 @@ class AudioExporter {
                 return outputURL
             } else {
                 print("M4A conversion failed: \(assetWriter.error?.localizedDescription ?? "unknown error")")
-                return copyAsWAV(inputURL: inputURL, filename: filename)
+                return copyAsWAV(inputURL: inputURL, filename: filename, outputFolder: outputFolder)
             }
 
         } catch {
             print("M4A conversion error: \(error)")
-            return copyAsWAV(inputURL: inputURL, filename: filename)
+            return copyAsWAV(inputURL: inputURL, filename: filename, outputFolder: outputFolder)
         }
     }
 
@@ -344,8 +343,9 @@ class AudioExporter {
     /// - Parameters:
     ///   - inputURL: 入力ファイル（WAV）
     ///   - filename: 出力ファイル名（拡張子なし）
+    ///   - outputFolder: 出力先フォルダ
     /// - Returns: コピーされたファイルURL（失敗した場合はnil）
-    private func copyAsWAV(inputURL: URL, filename: String) -> URL? {
+    private func copyAsWAV(inputURL: URL, filename: String, outputFolder: URL) -> URL? {
         let outputURL = outputFolder.appendingPathComponent("\(filename).wav")
 
         do {
