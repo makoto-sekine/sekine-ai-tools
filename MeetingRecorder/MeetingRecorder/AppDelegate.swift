@@ -53,7 +53,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let startRecordingActionId = "START_RECORDING"
 
     // -------------------------------------------------------------------------
-    // アプリケーション起動時の処理
+    // アプリケーションのライフサイクル
     // -------------------------------------------------------------------------
 
     /// アプリケーションが起動した時に呼ばれるメソッド
@@ -79,6 +79,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // メニューバーにアイコンを設置
         setupStatusItem()
+    }
+
+    /// アプリケーションが終了する直前に呼ばれるメソッド
+    /// - Parameter notification: 終了通知オブジェクト
+    func applicationWillTerminate(_ notification: Notification) {
+        // 録音中の場合は停止
+        if isRecording {
+            // 同期的に停止（非同期だと終了前に完了しない可能性がある）
+            Task {
+                await recordingManager.stopRecording()
+            }
+        }
+
+        // 実行中の文字起こし・要約プロセスを停止
+        QueueManager.shared.cleanup()
+
+        print("Application terminating")
     }
 
     // -------------------------------------------------------------------------
@@ -375,18 +392,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         body: "保存先: \(url.lastPathComponent)"
                     )
 
-                    // キューを更新
-                    QueueManager.shared.refreshQueue()
+                    // 自動録音の状態をリセット
+                    if self.isAutoRecording {
+                        self.isAutoRecording = false
+                        self.recordingManager.currentMeetingTitle = nil
+                    }
 
                     // 後処理（文字起こし・要約）を開始
                     self.startPostProcessing(audioURL: url)
                 }
+            }
 
-                // 自動録音の状態をリセット
-                if self.isAutoRecording {
-                    self.isAutoRecording = false
-                    self.recordingManager.currentMeetingTitle = nil
-                }
+            // キューを更新（非同期処理が完了してから）
+            if savedURL != nil {
+                await QueueManager.shared.refreshQueue()
             }
         }
     }
@@ -465,6 +484,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if isRecording {
             stopRecording()
         }
+
+        // 実行中の文字起こし・要約プロセスを停止
+        QueueManager.shared.cleanup()
+
         NSApp.terminate(nil)
     }
 

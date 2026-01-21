@@ -29,6 +29,11 @@ class AudioMixer {
     /// NSLock: 排他制御（同時に1つのスレッドだけがアクセスできるようにする）
     private let lock = NSLock()
 
+    /// バッファの最大サイズ（サンプル数）
+    /// 48kHz × 10秒 = 480,000サンプル
+    /// これを超えると古いデータを破棄してメモリリークを防ぐ
+    private let maxBufferSize = 480000
+
     /// システム音声を一時的に蓄積するバッファ
     /// Float型の配列で、-1.0〜1.0の範囲の音声サンプルを格納
     private var systemBuffer: [Float] = []
@@ -116,6 +121,13 @@ class AudioMixer {
             // バッファに追加
             systemBuffer.append(sample)
         }
+
+        // バッファサイズ制限チェック（メモリリーク防止）
+        if systemBuffer.count > maxBufferSize {
+            let excess = systemBuffer.count - maxBufferSize
+            systemBuffer.removeFirst(excess)
+            print("Warning: System audio buffer overflow (\(systemBuffer.count) samples), dropped \(excess) old samples")
+        }
     }
 
     /// マイク音声データをバッファに追加する
@@ -142,6 +154,13 @@ class AudioMixer {
             sample /= Float(channelCount)
             sample *= microphoneVolume
             micBuffer.append(sample)
+        }
+
+        // バッファサイズ制限チェック（メモリリーク防止）
+        if micBuffer.count > maxBufferSize {
+            let excess = micBuffer.count - maxBufferSize
+            micBuffer.removeFirst(excess)
+            print("Warning: Microphone audio buffer overflow (\(micBuffer.count) samples), dropped \(excess) old samples")
         }
     }
 

@@ -15,6 +15,14 @@ import Foundation
 class PostProcessor {
 
     // -------------------------------------------------------------------------
+    // プロパティ
+    // -------------------------------------------------------------------------
+
+    /// 実行中のプロセスを管理（アプリ終了時にクリーンアップするため）
+    private var runningProcesses: [Process] = []
+    private let processLock = NSLock()
+
+    // -------------------------------------------------------------------------
     // エラー定義
     // -------------------------------------------------------------------------
 
@@ -64,6 +72,38 @@ class PostProcessor {
         var isSuccess: Bool {
             return transcriptionError == nil && summaryError == nil
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // プロセス管理
+    // -------------------------------------------------------------------------
+
+    /// 実行中のすべてのプロセスを終了する（アプリ終了時に呼ばれる）
+    func cancelAllProcesses() {
+        processLock.lock()
+        defer { processLock.unlock() }
+
+        for process in runningProcesses {
+            if process.isRunning {
+                print("PostProcessor: Terminating process \(process.processIdentifier)")
+                process.terminate()
+            }
+        }
+        runningProcesses.removeAll()
+    }
+
+    /// プロセスを実行中リストに追加
+    private func registerProcess(_ process: Process) {
+        processLock.lock()
+        defer { processLock.unlock() }
+        runningProcesses.append(process)
+    }
+
+    /// プロセスを実行中リストから削除
+    private func unregisterProcess(_ process: Process) {
+        processLock.lock()
+        defer { processLock.unlock() }
+        runningProcesses.removeAll { $0 === process }
     }
 
     // -------------------------------------------------------------------------
@@ -282,6 +322,10 @@ class PostProcessor {
         process.standardError = errorPipe
 
         do {
+            // プロセスを登録（アプリ終了時にクリーンアップできるようにする）
+            registerProcess(process)
+            defer { unregisterProcess(process) }
+
             try process.run()
             process.waitUntilExit()
 
@@ -420,6 +464,10 @@ class PostProcessor {
         process.standardError = errorPipe
 
         do {
+            // プロセスを登録（アプリ終了時にクリーンアップできるようにする）
+            registerProcess(process)
+            defer { unregisterProcess(process) }
+
             try process.run()
             if let inputData = prompt.data(using: .utf8) {
                 inputPipe.fileHandleForWriting.write(inputData)

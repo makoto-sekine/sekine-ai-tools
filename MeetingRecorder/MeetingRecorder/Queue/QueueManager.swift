@@ -101,8 +101,10 @@ class QueueManager: ObservableObject {
         // ベースフォルダを作成
         try? FileManager.default.createDirectory(at: baseFolder, withIntermediateDirectories: true)
 
-        // キューを読み込み
-        refreshQueue()
+        // キューを読み込み（非同期で実行）
+        Task { @MainActor in
+            self.refreshQueue()
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -110,6 +112,7 @@ class QueueManager: ObservableObject {
     // -------------------------------------------------------------------------
 
     /// キューをファイルシステムから再読み込み
+    @MainActor
     func refreshQueue() {
         let fileManager = FileManager.default
 
@@ -189,9 +192,8 @@ class QueueManager: ObservableObject {
         // 日時の新しい順にソート
         newItems.sort { ($0.recordedAt ?? .distantPast) > ($1.recordedAt ?? .distantPast) }
 
-        DispatchQueue.main.async {
-            self.items = newItems
-        }
+        // 同期的に更新（@MainActorで保証されている）
+        self.items = newItems
     }
 
     // -------------------------------------------------------------------------
@@ -253,10 +255,14 @@ class QueueManager: ObservableObject {
 
         Task {
             // 最新のキューを取得
-            refreshQueue()
+            await refreshQueue()
 
             // アイテムを検索
-            guard let item = items.first(where: { $0.id == nextTask.itemId }) else {
+            let item = await MainActor.run {
+                items.first(where: { $0.id == nextTask.itemId })
+            }
+
+            guard let item = item else {
                 // アイテムが見つからない場合はスキップ
                 print("QueueManager: Item not found: \(nextTask.itemId)")
                 await MainActor.run {
@@ -274,7 +280,7 @@ class QueueManager: ObservableObject {
                 if item.needsTranscription && PostProcessingSettings.shared.isTranscriptionEnabled {
                     print("QueueManager: Processing transcription for \(item.id)")
                     _ = await transcribeInternal(item: item)
-                    refreshQueue()
+                    await refreshQueue()
                 }
 
             case .summarizeOnly:
@@ -282,7 +288,7 @@ class QueueManager: ObservableObject {
                 if item.needsSummary && PostProcessingSettings.shared.isSummaryEnabled {
                     print("QueueManager: Processing summary for \(item.id)")
                     _ = await summarizeInternal(item: item)
-                    refreshQueue()
+                    await refreshQueue()
                 }
 
             case .processAll:
@@ -290,11 +296,15 @@ class QueueManager: ObservableObject {
                 if item.needsTranscription && PostProcessingSettings.shared.isTranscriptionEnabled {
                     print("QueueManager: Processing transcription for \(item.id)")
                     _ = await transcribeInternal(item: item)
-                    refreshQueue()
+                    await refreshQueue()
                 }
 
                 // 最新の状態を取得
-                guard let updatedItem = items.first(where: { $0.id == nextTask.itemId }) else {
+                let updatedItem = await MainActor.run {
+                    items.first(where: { $0.id == nextTask.itemId })
+                }
+
+                guard let updatedItem = updatedItem else {
                     await MainActor.run {
                         self.pendingTasks.removeFirst()
                         self.isProcessingQueue = false
@@ -307,7 +317,7 @@ class QueueManager: ObservableObject {
                 if updatedItem.needsSummary && PostProcessingSettings.shared.isSummaryEnabled {
                     print("QueueManager: Processing summary for \(updatedItem.id)")
                     _ = await summarizeInternal(item: updatedItem)
-                    refreshQueue()
+                    await refreshQueue()
                 }
             }
 
@@ -412,6 +422,7 @@ class QueueManager: ObservableObject {
     // -------------------------------------------------------------------------
 
     /// アイテムを削除（フォルダごと削除）
+    @MainActor
     func deleteItem(_ item: QueueItem) {
         let fileManager = FileManager.default
 
@@ -426,6 +437,7 @@ class QueueManager: ObservableObject {
     ///   - item: 変更対象のアイテム
     ///   - newId: 新しいID
     /// - Returns: 成功したかどうか
+    @MainActor
     @discardableResult
     func renameItem(_ item: QueueItem, to newId: String) -> Bool {
         let fileManager = FileManager.default
@@ -489,5 +501,23 @@ class QueueManager: ObservableObject {
     /// 指定アイテムのフォルダをFinderで開く
     func openItemFolderInFinder(_ item: QueueItem) {
         NSWorkspace.shared.open(item.folderURL)
+    }
+
+    // -------------------------------------------------------------------------
+    // クリーンアップ（アプリ終了時）
+    // -------------------------------------------------------------------------
+
+    /// アプリ終了時にすべての処理を停止する
+    func cleanup() {
+        // 実行中のプロセスをすべて終了
+        postProcessor.cancelAllProcesses()
+
+        // キュー処理をクリア
+        DispatchQueue.main.async {
+            self.pendingTasks.removeAll()
+            self.isProcessingQueue = false
+        }
+
+        print("QueueManager: Cleanup completed")
     }
 }

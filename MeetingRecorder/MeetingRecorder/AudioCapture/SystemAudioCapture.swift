@@ -179,12 +179,22 @@ class SystemAudioCapture: NSObject {
                 let floatData = UnsafeRawPointer(dataPointer).bindMemory(to: Float.self, capacity: length / MemoryLayout<Float>.size)
                 let channelCount = Int(format.channelCount)
                 let frameCountInt = Int(frameCount)
+                let totalSampleCount = length / MemoryLayout<Float>.size
 
-                // 各チャンネル、各フレームのデータをコピー
+                // 非インターリーブ形式の場合、チャンネルごとに連続したメモリ領域
+                // チャンネル0のサンプルが全て並び、その後にチャンネル1のサンプルが続く
+                let samplesPerChannel = frameCountInt
+
                 for channel in 0..<channelCount {
-                    for frame in 0..<frameCountInt {
-                        if channel * frameCountInt + frame < length / MemoryLayout<Float>.size {
-                            floatChannelData[channel][frame] = floatData[channel * frameCountInt + frame]
+                    let sourceOffset = channel * samplesPerChannel
+                    for frame in 0..<samplesPerChannel {
+                        let sourceIndex = sourceOffset + frame
+                        // 範囲チェック
+                        if sourceIndex < totalSampleCount {
+                            floatChannelData[channel][frame] = floatData[sourceIndex]
+                        } else {
+                            // 範囲外の場合は無音（0.0）を設定
+                            floatChannelData[channel][frame] = 0.0
                         }
                     }
                 }
