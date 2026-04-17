@@ -1,0 +1,14 @@
+**/.build/*
+**/DerivedData/
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/*.xcodeproj/xcuserdata/
+**/*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Generated Xcode project (regenerated via `xcodegen generate`)
+TimeManager.xcodeproj/
+
+.DS_Store
+
+# Claude / worktree metadata
+.claude/worktrees/
