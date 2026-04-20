@@ -5,7 +5,8 @@ struct FilledSlotView: View {
     let tag: TimelineTag?
     let rowsSpanned: Int
     @Binding var autoOpenSlotId: UUID?
-    let onCommit: (UUID, String, String?) -> Void
+    @Binding var openEditorCount: Int
+    let onCommit: (UUID, String, String?, String) -> Void
     let onRequestSplit: (UUID) -> Void
     let onRequestMergeWithNext: (UUID) -> Void
     let onRequestResize: (UUID, Int) -> Void
@@ -33,6 +34,12 @@ struct FilledSlotView: View {
                 Text(timeLabel)
                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                     .foregroundColor(Color.white.opacity(0.7))
+                if !slot.note.isEmpty {
+                    Image(systemName: "note.text")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.white.opacity(0.7))
+                        .help("メモあり")
+                }
                 Spacer(minLength: 0)
             }
             .frame(height: 20)
@@ -115,9 +122,16 @@ struct FilledSlotView: View {
             SlotEditorView(
                 slot: slot,
                 tagLibrary: tagLibrary,
-                onCommit: { text, tagId in onCommit(slot.id, text, tagId) },
+                onCommit: { text, tagId, note in onCommit(slot.id, text, tagId, note) },
                 onDelete: { onDelete(slot.id) }
             )
+        }
+        .onChange(of: showEditor) { isOpen in
+            if isOpen {
+                openEditorCount += 1
+            } else {
+                openEditorCount = max(0, openEditorCount - 1)
+            }
         }
     }
 

@@ -3,6 +3,7 @@ import SwiftUI
 struct DayHeaderView: View {
     let displayDay: DayDate
     let isToday: Bool
+    let arrowShortcutEnabled: Bool
     let onPrev: () -> Void
     let onNext: () -> Void
     let onToday: () -> Void
@@ -10,12 +11,9 @@ struct DayHeaderView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Button(action: onPrev) {
-                Image(systemName: "chevron.left")
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(Color.white.opacity(0.7))
-            .keyboardShortcut(.leftArrow, modifiers: [])
+            prevButton
+                .buttonStyle(.plain)
+                .foregroundColor(Color.white.opacity(0.7))
 
             Spacer(minLength: 0)
 
@@ -39,12 +37,9 @@ struct DayHeaderView: View {
 
             Spacer(minLength: 0)
 
-            Button(action: onNext) {
-                Image(systemName: "chevron.right")
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(Color.white.opacity(0.7))
-            .keyboardShortcut(.rightArrow, modifiers: [])
+            nextButton
+                .buttonStyle(.plain)
+                .foregroundColor(Color.white.opacity(0.7))
 
             Button(action: onToday) {
                 Image(systemName: "dot.circle")
@@ -56,5 +51,33 @@ struct DayHeaderView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var prevButton: some View {
+        if arrowShortcutEnabled {
+            Button(action: onPrev) {
+                Image(systemName: "chevron.left")
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [])
+        } else {
+            Button(action: onPrev) {
+                Image(systemName: "chevron.left")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var nextButton: some View {
+        if arrowShortcutEnabled {
+            Button(action: onNext) {
+                Image(systemName: "chevron.right")
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [])
+        } else {
+            Button(action: onNext) {
+                Image(systemName: "chevron.right")
+            }
+        }
     }
 }
