@@ -7,6 +7,7 @@ struct TimeRulerRow: Identifiable, Hashable {
 
 struct TimeRuler {
     let rows: [TimeRulerRow]
+    let endMinute: MinuteOfDay
 
     init(range: (min: MinuteOfDay, max: MinuteOfDay)) {
         var result: [TimeRulerRow] = []
@@ -17,5 +18,6 @@ struct TimeRuler {
             cursor += step
         }
         self.rows = result
+        self.endMinute = range.max
     }
 }

@@ -19,7 +19,7 @@ final class WindowCoordinator {
 
         self.window = BorderlessKeyWindow(
             contentRect: initialFrame,
-            styleMask: [.borderless, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -37,9 +37,13 @@ final class WindowCoordinator {
         window.isMovableByWindowBackground = true
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isReleasedWhenClosed = false
         window.acceptsMouseMovedEvents = true
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .transient]
+        window.minSize = NSSize(width: 220, height: 320)
         setBackgroundLevel()
     }
 
@@ -100,14 +104,14 @@ final class WindowCoordinator {
     private static func loadSavedFrame() -> NSRect? {
         guard let stored = UserDefaults.standard.string(forKey: "TimeManager.windowFrame") else { return nil }
         let rect = NSRectFromString(stored)
-        guard rect.width > 100 && rect.height > 100 else { return nil }
+        guard rect.width >= 220, rect.height >= 500 else { return nil }
         return rect
     }
 
     private static func defaultFrame() -> NSRect {
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let width: CGFloat = AppTheme.windowDefaultWidth
-        let height: CGFloat = min(720, screen.height * 0.8)
+        let height: CGFloat = screen.height * 0.9
         let x = screen.maxX - width - 24
         let y = screen.minY + (screen.height - height) / 2
         return NSRect(x: x, y: y, width: width, height: height)

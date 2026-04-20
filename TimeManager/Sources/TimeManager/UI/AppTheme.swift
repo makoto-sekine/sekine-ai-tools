@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AppTheme {
-    static let slotRowHeight: CGFloat = 44
+    static let slotRowHeight: CGFloat = 58
     static let timeLabelWidth: CGFloat = 56
     static let capsuleCornerRadius: CGFloat = 10
     static let accentBarWidth: CGFloat = 3

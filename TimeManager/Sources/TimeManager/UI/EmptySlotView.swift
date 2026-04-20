@@ -8,6 +8,8 @@ struct EmptySlotView: View {
 
     var body: some View {
         ZStack(alignment: .leading) {
+            Color.white.opacity(0.001)
+
             RoundedRectangle(cornerRadius: AppTheme.capsuleCornerRadius, style: .continuous)
                 .stroke(
                     hovering ? AppTheme.emptyHoverOutline : Color.white.opacity(0.08),
