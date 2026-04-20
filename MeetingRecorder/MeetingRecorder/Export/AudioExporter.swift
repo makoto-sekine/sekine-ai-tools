@@ -36,6 +36,18 @@ class AudioExporter {
     /// 出力する音声のフォーマット
     private let outputFormat: AVAudioFormat
 
+    /// 無音カット機能の有効/無効
+    var isSilenceRemovalEnabled: Bool = true
+
+    /// 無音と判定するRMSしきい値（0.01 = 約-40dB）
+    private let silenceThreshold: Float = 0.01
+
+    /// この秒数以上の無音をカット対象とする（1.0秒）
+    private let minimumSilenceDuration: TimeInterval = 1.0
+
+    /// カット時に残す余白（前後に0.2秒ずつ）
+    private let silencePadding: TimeInterval = 0.2
+
     // -------------------------------------------------------------------------
     // 初期化
     // -------------------------------------------------------------------------
@@ -127,21 +139,209 @@ class AudioExporter {
         // ID用のフォルダを作成（QueueManagerから取得）
         let itemFolder = QueueManager.shared.createItemFolder(for: filename)
 
+        // 無音カット処理（有効な場合のみ）
+        let processedURL: URL
+        if isSilenceRemovalEnabled {
+            if let silenceRemovedURL = await removeSilence(from: tempURL) {
+                processedURL = silenceRemovedURL
+                // 元のtempURLを削除
+                try? FileManager.default.removeItem(at: tempURL)
+            } else {
+                // 無音カット失敗時は元のファイルを使用
+                print("Silence removal failed, using original file")
+                processedURL = tempURL
+            }
+        } else {
+            processedURL = tempURL
+        }
+
         // ファイル形式を変換（フォルダ内に出力）
         let finalURL: URL?
 
         if isFFmpegAvailable() {
             // ffmpegがあればMP3に変換（高圧縮・高互換性）
-            finalURL = await convertToMP3(inputURL: tempURL, filename: filename, outputFolder: itemFolder)
+            finalURL = await convertToMP3(inputURL: processedURL, filename: filename, outputFolder: itemFolder)
         } else {
             // ffmpegがなければM4Aに変換（Appleの標準形式）
-            finalURL = await convertToM4A(inputURL: tempURL, filename: filename, outputFolder: itemFolder)
+            finalURL = await convertToM4A(inputURL: processedURL, filename: filename, outputFolder: itemFolder)
         }
 
-        // 一時ファイルを削除
-        try? FileManager.default.removeItem(at: tempURL)
+        // 処理済みファイルを削除
+        try? FileManager.default.removeItem(at: processedURL)
 
         return finalURL
+    }
+
+    // -------------------------------------------------------------------------
+    // 無音カット処理
+    // -------------------------------------------------------------------------
+
+    /// 音声ファイルから無音部分をカットする
+    /// - Parameter inputURL: 入力ファイル（WAV）
+    /// - Returns: 無音カット後のファイルURL（失敗した場合はnil）
+    private func removeSilence(from inputURL: URL) async -> URL? {
+        do {
+            // 入力ファイルを読み込む
+            let inputFile = try AVAudioFile(forReading: inputURL)
+            let format = inputFile.processingFormat
+            let sampleRate = format.sampleRate
+
+            // ウィンドウサイズ（100ms分のサンプル数）
+            let windowSize = Int(sampleRate * 0.1)
+
+            // 余白サンプル数
+            let paddingSamples = Int(sampleRate * silencePadding)
+
+            // 最小無音サンプル数
+            let minimumSilenceSamples = Int(sampleRate * minimumSilenceDuration)
+
+            // ファイル全体を読み込む
+            let frameCount = AVAudioFrameCount(inputFile.length)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+                return nil
+            }
+
+            try inputFile.read(into: buffer)
+            buffer.frameLength = frameCount
+
+            guard let floatData = buffer.floatChannelData else {
+                return nil
+            }
+
+            // 無音区間を検出
+            var isInSilence = false
+            var silenceStartFrame = 0
+            var silenceRanges: [(start: Int, end: Int)] = []
+
+            let totalFrames = Int(buffer.frameLength)
+            let channelCount = Int(format.channelCount)
+
+            for windowStart in stride(from: 0, to: totalFrames, by: windowSize) {
+                let windowEnd = min(windowStart + windowSize, totalFrames)
+                let windowFrames = windowEnd - windowStart
+
+                // ウィンドウ内のRMSを計算
+                var sumSquares: Float = 0
+                for channel in 0..<channelCount {
+                    for frame in windowStart..<windowEnd {
+                        let sample = floatData[channel][frame]
+                        sumSquares += sample * sample
+                    }
+                }
+
+                let rms = sqrt(sumSquares / Float(windowFrames * channelCount))
+
+                // 無音判定
+                if rms < silenceThreshold {
+                    if !isInSilence {
+                        // 無音開始
+                        isInSilence = true
+                        silenceStartFrame = windowStart
+                    }
+                } else {
+                    if isInSilence {
+                        // 無音終了
+                        let silenceDuration = windowStart - silenceStartFrame
+
+                        // 最小無音時間以上の場合のみ記録
+                        if silenceDuration >= minimumSilenceSamples {
+                            silenceRanges.append((start: silenceStartFrame, end: windowStart))
+                        }
+
+                        isInSilence = false
+                    }
+                }
+            }
+
+            // 最後まで無音だった場合
+            if isInSilence {
+                let silenceDuration = totalFrames - silenceStartFrame
+                if silenceDuration >= minimumSilenceSamples {
+                    silenceRanges.append((start: silenceStartFrame, end: totalFrames))
+                }
+            }
+
+            print("Detected \(silenceRanges.count) silence regions")
+
+            // 無音区間がない場合は元のファイルを返す
+            guard !silenceRanges.isEmpty else {
+                print("No silence regions to remove")
+                return inputURL
+            }
+
+            // 出力ファイルを作成
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("silence_removed_\(UUID().uuidString).wav")
+
+            let outputFile = try AVAudioFile(
+                forWriting: outputURL,
+                settings: format.settings,
+                commonFormat: .pcmFormatFloat32,
+                interleaved: false
+            )
+
+            // 無音区間以外を出力ファイルに書き込む
+            var currentFrame = 0
+
+            for silenceRange in silenceRanges {
+                // 余白を考慮した無音区間の開始・終了
+                let silenceStart = max(0, silenceRange.start - paddingSamples)
+                let silenceEnd = min(totalFrames, silenceRange.end + paddingSamples)
+
+                // 無音区間前の音声部分を書き込む
+                if currentFrame < silenceStart {
+                    let segmentLength = silenceStart - currentFrame
+
+                    if let segmentBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(segmentLength)) {
+                        segmentBuffer.frameLength = AVAudioFrameCount(segmentLength)
+
+                        // データをコピー
+                        if let segmentFloatData = segmentBuffer.floatChannelData {
+                            for channel in 0..<channelCount {
+                                for i in 0..<segmentLength {
+                                    segmentFloatData[channel][i] = floatData[channel][currentFrame + i]
+                                }
+                            }
+                        }
+
+                        try outputFile.write(from: segmentBuffer)
+                    }
+                }
+
+                currentFrame = silenceEnd
+            }
+
+            // 最後の無音区間以降の音声を書き込む
+            if currentFrame < totalFrames {
+                let segmentLength = totalFrames - currentFrame
+
+                if let segmentBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(segmentLength)) {
+                    segmentBuffer.frameLength = AVAudioFrameCount(segmentLength)
+
+                    if let segmentFloatData = segmentBuffer.floatChannelData {
+                        for channel in 0..<channelCount {
+                            for i in 0..<segmentLength {
+                                segmentFloatData[channel][i] = floatData[channel][currentFrame + i]
+                            }
+                        }
+                    }
+
+                    try outputFile.write(from: segmentBuffer)
+                }
+            }
+
+            let originalDuration = Double(totalFrames) / sampleRate
+            let newDuration = Double(outputFile.length) / sampleRate
+            let removedDuration = originalDuration - newDuration
+
+            print("Silence removal complete: removed \(String(format: "%.1f", removedDuration))s from \(String(format: "%.1f", originalDuration))s")
+
+            return outputURL
+
+        } catch {
+            print("Error removing silence: \(error)")
+            return nil
+        }
     }
 
     // -------------------------------------------------------------------------

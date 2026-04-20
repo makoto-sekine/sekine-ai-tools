@@ -28,6 +28,12 @@ class MicrophoneCapture {
     /// キャプチャした音声データを外部に渡すためのコールバック
     var audioDataHandler: ((AVAudioPCMBuffer) -> Void)?
 
+    /// ノイズキャンセリングの有効/無効
+    var isNoiseCancellationEnabled: Bool = false
+
+    /// ノイズゲートのしきい値（-60dB = 0.001, 値より小さい音は無視）
+    private let noiseGateThreshold: Float = 0.005
+
     // -------------------------------------------------------------------------
     // キャプチャの開始
     // -------------------------------------------------------------------------
@@ -95,13 +101,31 @@ class MicrophoneCapture {
             throw MicrophoneError.invalidFormat
         }
 
+        // ノイズキャンセリング機能を有効化
+        // macOS 11.0以降で利用可能なVoice Processing機能を使用
+        if #available(macOS 11.0, *), isNoiseCancellationEnabled {
+            do {
+                try inputNode.setVoiceProcessingEnabled(true)
+                print("Voice processing (noise cancellation) enabled")
+            } catch {
+                print("Warning: Failed to enable voice processing: \(error)")
+            }
+        }
+
         // 入力ノードにタップ（データ取得ポイント）を設置
         // bufferSize: 一度に取得するサンプル数（4096 = 約85ms分@48kHz）
         // format: 取得するデータのフォーマット
         // クロージャ: データが利用可能になるたびに呼ばれる
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, time in
+            guard let self = self else { return }
+
+            // ノイズゲート処理（小さすぎる音をカット）
+            if self.isNoiseCancellationEnabled {
+                self.applyNoiseGate(to: buffer)
+            }
+
             // キャプチャしたデータをコールバックで外部に渡す
-            self?.audioDataHandler?(buffer)
+            self.audioDataHandler?(buffer)
         }
 
         // オーディオエンジンを開始
@@ -126,6 +150,32 @@ class MicrophoneCapture {
         inputNode = nil
 
         print("Microphone capture stopped")
+    }
+
+    // -------------------------------------------------------------------------
+    // ノイズゲート処理
+    // -------------------------------------------------------------------------
+
+    /// ノイズゲート処理を適用（しきい値以下の音を0にする）
+    /// - Parameter buffer: 処理対象の音声バッファ
+    private func applyNoiseGate(to buffer: AVAudioPCMBuffer) {
+        guard let floatData = buffer.floatChannelData else { return }
+
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+
+        // 各チャンネルに対して処理
+        for channel in 0..<channelCount {
+            for frame in 0..<frameCount {
+                let sample = floatData[channel][frame]
+                let absoluteValue = abs(sample)
+
+                // しきい値以下の音は0にする（ノイズとみなす）
+                if absoluteValue < noiseGateThreshold {
+                    floatData[channel][frame] = 0
+                }
+            }
+        }
     }
 }
 
