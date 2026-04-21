@@ -5,11 +5,11 @@ import Foundation
 // =============================================================================
 // このクラスは録音終了後に以下の処理を実行します：
 // 1. whisperコマンドを使用した音声の文字起こし
-// 2. codex execコマンドを使用したマークダウン形式の要約生成
+// 2. 選択されたCLI（codex / claude）を使用したマークダウン形式の要約生成
 //
 // 【前提条件】
 // - whisper: ホストマシンにインストール済み
-// - codex: ホストマシンにインストール済み（サブスクリプションでログイン済み）
+// - codex または claude: ホストマシンにインストール済み（ログイン済み）
 // =============================================================================
 
 class PostProcessor {
@@ -30,9 +30,11 @@ class PostProcessor {
     enum PostProcessingError: LocalizedError {
         case whisperNotFound
         case codexNotFound
+        case claudeNotFound
         case transcriptionFailed(String)
         case summaryFailed(String)
         case fileReadFailed
+        case exportDecisionFailed(String)
 
         var errorDescription: String? {
             switch self {
@@ -40,14 +42,30 @@ class PostProcessor {
                 return "whisperコマンドが見つかりません。インストールを確認してください。"
             case .codexNotFound:
                 return "codexコマンドが見つかりません。インストールを確認してください。"
+            case .claudeNotFound:
+                return "claudeコマンドが見つかりません。インストールを確認してください。"
             case .transcriptionFailed(let message):
                 return "文字起こしに失敗しました: \(message)"
             case .summaryFailed(let message):
                 return "要約に失敗しました: \(message)"
             case .fileReadFailed:
                 return "文字起こしファイルの読み込みに失敗しました。"
+            case .exportDecisionFailed(let message):
+                return "エクスポート先の判定に失敗しました: \(message)"
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // エクスポート先情報
+    // -------------------------------------------------------------------------
+
+    /// エージェントが判定したエクスポート先
+    struct ExportDestination {
+        /// プロジェクトフォルダ名（Meetings 配下のフォルダ名）
+        let project: String
+        /// 短い会議名（ファイル名の一部に使う）
+        let title: String
     }
 
     // -------------------------------------------------------------------------
@@ -147,6 +165,28 @@ class PostProcessor {
 
         // whichコマンドで検索
         return findCommandPath("codex")
+    }
+
+    /// claude (Claude Code) コマンドのパスを検索
+    private func findClaudePath() -> String? {
+        let possiblePaths = [
+            "/usr/local/bin/claude",
+            "/opt/homebrew/bin/claude",
+            "\(NSHomeDirectory())/.nodebrew/current/bin/claude",
+            "\(NSHomeDirectory())/.local/bin/claude",
+            "\(NSHomeDirectory())/.npm-global/bin/claude",
+            "\(NSHomeDirectory())/.claude/local/claude",
+            "/usr/bin/claude"
+        ]
+
+        for path in possiblePaths {
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+
+        // whichコマンドで検索
+        return findCommandPath("claude")
     }
 
     /// whichコマンドを使ってコマンドのパスを検索
@@ -277,6 +317,89 @@ class PostProcessor {
         return try await summarize(transcriptURL: transcriptURL, baseName: baseName, outputFolder: outputFolder)
     }
 
+    /// 要約内容と既存プロジェクト一覧から、Obsidianへのエクスポート先を判定する
+    /// - Parameters:
+    ///   - summaryContent: 要約ファイルの内容
+    ///   - existingProjects: `{vault}/Meetings/` 配下にある既存プロジェクトフォルダ名の一覧
+    ///   - recordedDate: 会議の録音日（判定の補助情報）
+    ///   - workingDirectory: エージェント実行時のカレントディレクトリ
+    /// - Returns: プロジェクト名と短い会議名
+    func decideExportDestination(
+        summaryContent: String,
+        existingProjects: [String],
+        recordedDate: Date,
+        workingDirectory: URL
+    ) async throws -> ExportDestination {
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let dateString = dateFormatter.string(from: recordedDate)
+
+        let projectsList: String
+        if existingProjects.isEmpty {
+            projectsList = "（なし）"
+        } else {
+            projectsList = existingProjects.map { "- \($0)" }.joined(separator: "\n")
+        }
+
+        let prompt = """
+以下の会議要約を Obsidian vault のどのプロジェクトフォルダに配置するか判断してください。
+
+## 既存のプロジェクトフォルダ一覧
+\(projectsList)
+
+## 録音日
+\(dateString)
+
+## 要約
+\(summaryContent)
+
+## 指示
+- 既存プロジェクトのいずれかに該当するなら、そのフォルダ名を**一字一句そのまま**使ってください。
+- 該当するものがなく、かつ要約から特定のプロジェクトを明確に判定できる場合のみ、新しいプロジェクト名を提案してください。フォルダ名として使えるよう簡潔にしてください。
+- どのプロジェクトに属するか判断が難しい・自信がない場合は、必ず `"Others"` を使ってください。新規プロジェクトを乱発しないでください。
+- 会議名は短く（目安として20文字以内）、ファイル名として使えるよう記号（/ \\ : * ? " < > |）を避けてください。
+- 出力は**JSON1行のみ**。前置き・説明文・コードフェンス（```）は一切出力しないでください。
+
+## 出力形式
+{"project":"<プロジェクトフォルダ名>","title":"<短い会議名>"}
+"""
+
+        let rawOutput = try runLLM(prompt: prompt, workingDirectory: workingDirectory)
+
+        guard let jsonString = extractJSONObject(from: rawOutput),
+              let data = jsonString.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let project = (obj["project"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let title = (obj["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !project.isEmpty, !title.isEmpty else {
+            throw PostProcessingError.exportDecisionFailed("エージェントの応答を解釈できませんでした: \(rawOutput.prefix(200))")
+        }
+
+        return ExportDestination(project: project, title: title)
+    }
+
+    /// 出力文字列から最初の `{...}` JSONオブジェクトを抽出する
+    /// - エージェントの出力にログや前置きが混入する場合に備えるためのヘルパー
+    private func extractJSONObject(from raw: String) -> String? {
+        guard let start = raw.firstIndex(of: "{"),
+              let end = raw.lastIndex(of: "}"),
+              start < end else {
+            return nil
+        }
+        return String(raw[start...end])
+    }
+
+    /// 設定された要約エンジンでプロンプトを実行して stdout を返す
+    private func runLLM(prompt: String, workingDirectory: URL) throws -> String {
+        switch PostProcessingSettings.shared.summaryEngine {
+        case .codex:
+            return try runCodexSummary(prompt: prompt, workingDirectory: workingDirectory)
+        case .claudeCode:
+            return try runClaudeSummary(prompt: prompt, workingDirectory: workingDirectory)
+        }
+    }
+
     // -------------------------------------------------------------------------
     // 文字起こし処理
     // -------------------------------------------------------------------------
@@ -359,7 +482,7 @@ class PostProcessor {
     // 要約処理
     // -------------------------------------------------------------------------
 
-    /// codex execコマンドを使用して文字起こしを要約
+    /// 選択されたCLIエンジンを使用して文字起こしを要約
     /// - Parameters:
     ///   - transcriptURL: 文字起こしファイルのURL
     ///   - baseName: ベースファイル名（拡張子なし、省略時は文字起こしファイルから取得）
@@ -377,15 +500,33 @@ class PostProcessor {
         // 相対パスで文字起こしファイルを参照
         let transcriptFileName = transcriptURL.lastPathComponent
 
-        let codexPath = findCodexPath()
-        let useEnv = codexPath == nil
-        print("PostProcessor: codex path \(codexPath ?? "/usr/bin/env (PATH)")")
+        let engine = PostProcessingSettings.shared.summaryEngine
+        print("PostProcessor: summary engine \(engine.displayName)")
         print("PostProcessor: working directory \(workingDirectory.path)")
         print("PostProcessor: transcript file \(transcriptFileName)")
         print("PostProcessor: summary output \(summaryURL.path)")
 
-        // プロンプトを作成
-        let prompt = """
+        // 要約プロンプト（共通）
+        let prompt = summaryPrompt(transcriptFileName: transcriptFileName)
+
+        // エンジンごとに要約を実行し、Markdown本文を取得
+        let summaryContent: String
+        switch engine {
+        case .codex:
+            summaryContent = try runCodexSummary(prompt: prompt, workingDirectory: workingDirectory)
+        case .claudeCode:
+            summaryContent = try runClaudeSummary(prompt: prompt, workingDirectory: workingDirectory)
+        }
+
+        // 要約をファイルに保存
+        try summaryContent.write(to: summaryURL, atomically: true, encoding: .utf8)
+
+        return summaryURL
+    }
+
+    /// 要約プロンプトを生成
+    private func summaryPrompt(transcriptFileName: String) -> String {
+        return """
 カレントディレクトリにある「\(transcriptFileName)」ファイルを読み込んでください。
 このファイルには、会議の音声を自動文字起こししたデータが含まれています。
 複数の話者による会話が混在している可能性があるため、内容を適切に解釈し、マークダウン形式で要約してください。
@@ -432,21 +573,10 @@ class PostProcessor {
 
 （アクションアイテムがない場合はこのセクション全体を省略してください）
 """
+    }
 
-        // codex execコマンドを実行
-        let process = Process()
-        if let codexPath = codexPath {
-            process.executableURL = URL(fileURLWithPath: codexPath)
-            process.arguments = ["exec", "--skip-git-repo-check"]
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["codex", "exec", "--skip-git-repo-check"]
-        }
-
-        // カレントディレクトリを設定（文字起こしファイルのあるフォルダ）
-        process.currentDirectoryURL = workingDirectory
-
-        // 環境変数を設定
+    /// PATH を拡張した環境変数を返す（各CLIの検出用パスを先頭に追加）
+    private func extendedEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         if let path = environment["PATH"] {
             let extraPaths = [
@@ -455,11 +585,30 @@ class PostProcessor {
                 "\(NSHomeDirectory())/.nodebrew/current/bin",
                 "\(NSHomeDirectory())/.local/bin",
                 "\(NSHomeDirectory())/bin",
-                "\(NSHomeDirectory())/.npm-global/bin"
+                "\(NSHomeDirectory())/.npm-global/bin",
+                "\(NSHomeDirectory())/.claude/local"
             ]
             environment["PATH"] = (extraPaths + [path]).joined(separator: ":")
         }
-        process.environment = environment
+        return environment
+    }
+
+    /// codex exec で要約を実行（プロンプトは stdin 渡し）
+    private func runCodexSummary(prompt: String, workingDirectory: URL) throws -> String {
+        let codexPath = findCodexPath()
+        let useEnv = codexPath == nil
+        print("PostProcessor: codex path \(codexPath ?? "/usr/bin/env (PATH)")")
+
+        let process = Process()
+        if let codexPath = codexPath {
+            process.executableURL = URL(fileURLWithPath: codexPath)
+            process.arguments = ["exec", "--skip-git-repo-check"]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["codex", "exec", "--skip-git-repo-check"]
+        }
+        process.currentDirectoryURL = workingDirectory
+        process.environment = extendedEnvironment()
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -469,7 +618,6 @@ class PostProcessor {
         process.standardError = errorPipe
 
         do {
-            // プロセスを登録（アプリ終了時にクリーンアップできるようにする）
             registerProcess(process)
             defer { unregisterProcess(process) }
 
@@ -490,18 +638,67 @@ class PostProcessor {
                 throw PostProcessingError.summaryFailed(errorMessage)
             }
 
-            // codex execの出力を取得
             let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
             guard let summaryContent = String(data: outputData, encoding: .utf8),
                   !summaryContent.isEmpty else {
                 print("PostProcessor: codex output empty")
                 throw PostProcessingError.summaryFailed("要約の出力が空です")
             }
+            return summaryContent
 
-            // 要約をファイルに保存
-            try summaryContent.write(to: summaryURL, atomically: true, encoding: .utf8)
+        } catch let error as PostProcessingError {
+            throw error
+        } catch {
+            throw PostProcessingError.summaryFailed(error.localizedDescription)
+        }
+    }
 
-            return summaryURL
+    /// claude (Claude Code) で要約を実行（プロンプトは引数、stdoutからtext取得）
+    private func runClaudeSummary(prompt: String, workingDirectory: URL) throws -> String {
+        let claudePath = findClaudePath()
+        let useEnv = claudePath == nil
+        print("PostProcessor: claude path \(claudePath ?? "/usr/bin/env (PATH)")")
+
+        let process = Process()
+        if let claudePath = claudePath {
+            process.executableURL = URL(fileURLWithPath: claudePath)
+            process.arguments = ["-p", prompt, "--output-format", "text"]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["claude", "-p", prompt, "--output-format", "text"]
+        }
+        process.currentDirectoryURL = workingDirectory
+        process.environment = extendedEnvironment()
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        do {
+            registerProcess(process)
+            defer { unregisterProcess(process) }
+
+            try process.run()
+            process.waitUntilExit()
+
+            if process.terminationStatus != 0 {
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                print("PostProcessor: claude failed: \(errorMessage)")
+                if useEnv && errorMessage.contains("claude") && errorMessage.contains("not found") {
+                    throw PostProcessingError.claudeNotFound
+                }
+                throw PostProcessingError.summaryFailed(errorMessage)
+            }
+
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            guard let summaryContent = String(data: outputData, encoding: .utf8),
+                  !summaryContent.isEmpty else {
+                print("PostProcessor: claude output empty")
+                throw PostProcessingError.summaryFailed("要約の出力が空です")
+            }
+            return summaryContent
 
         } catch let error as PostProcessingError {
             throw error

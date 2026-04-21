@@ -11,6 +11,24 @@ import Foundation
 class PostProcessingSettings {
 
     // -------------------------------------------------------------------------
+    // 要約エンジン定義
+    // -------------------------------------------------------------------------
+
+    /// 要約に使用するCLIエンジン
+    enum SummaryEngine: String {
+        case codex
+        case claudeCode
+
+        /// メニュー表示用ラベル
+        var displayName: String {
+            switch self {
+            case .codex: return "Codex"
+            case .claudeCode: return "ClaudeCode"
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // シングルトンインスタンス
     // -------------------------------------------------------------------------
 
@@ -26,6 +44,12 @@ class PostProcessingSettings {
 
     /// 要約有効/無効の設定キー
     private let summaryEnabledKey = "isSummaryEnabled"
+
+    /// 要約エンジンの設定キー
+    private let summaryEngineKey = "summaryEngine"
+
+    /// Obsidian vault パスの設定キー
+    private let obsidianVaultPathKey = "obsidianVaultPath"
 
     // -------------------------------------------------------------------------
     // プロパティ
@@ -50,6 +74,29 @@ class PostProcessingSettings {
             return UserDefaults.standard.bool(forKey: summaryEnabledKey)
         }
         set { UserDefaults.standard.set(newValue, forKey: summaryEnabledKey) }
+    }
+
+    /// 要約に使用するCLIエンジン
+    /// - デフォルトは `.codex`
+    var summaryEngine: SummaryEngine {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: summaryEngineKey),
+                  let engine = SummaryEngine(rawValue: raw) else {
+                return .codex
+            }
+            return engine
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: summaryEngineKey) }
+    }
+
+    /// Obsidian vault のパス（未設定時は nil）
+    /// - エクスポート機能で `{vaultPath}/Meetings/{project}/` に要約を保存する
+    var obsidianVaultPath: String? {
+        get {
+            let value = UserDefaults.standard.string(forKey: obsidianVaultPathKey)
+            return (value?.isEmpty == false) ? value : nil
+        }
+        set { UserDefaults.standard.set(newValue, forKey: obsidianVaultPathKey) }
     }
 
     // -------------------------------------------------------------------------
