@@ -56,12 +56,13 @@ struct SlotEditorView: View {
                 Text("メモ")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.secondary)
-                TextEditor(text: $draftNote)
-                    .font(.system(size: 12))
-                    .focused($focusedField, equals: .note)
+                MemoField(text: $draftNote)
                     .frame(minHeight: 70, maxHeight: 140)
-                    .padding(4)
                     .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.secondary.opacity(0.25))
                     )
@@ -75,7 +76,7 @@ struct SlotEditorView: View {
                     Label("削除", systemImage: "trash")
                 }
                 Spacer()
-                Text(focusedField == .note ? "メモ欄では改行できます" : "Enter で保存")
+                Text("Enter で保存（メモ欄は改行）")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
