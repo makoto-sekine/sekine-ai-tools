@@ -33,6 +33,9 @@ class QueueManager: ObservableObject {
     /// 現在処理中のアイテムID
     @Published var processingItemId: String?
 
+    /// 現在エクスポート中のアイテムID
+    @Published var exportingItemId: String?
+
     /// 処理タスクの種類
     enum TaskType: CustomStringConvertible {
         case transcribeOnly
@@ -52,6 +55,24 @@ class QueueManager: ObservableObject {
     struct ProcessingTask {
         let itemId: String
         let taskType: TaskType
+    }
+
+    /// エクスポート処理で発生するエラー
+    enum ExportError: LocalizedError {
+        case vaultNotSet
+        case summaryMissing
+        case fileOperationFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .vaultNotSet:
+                return "Obsidian Vault が未設定です。メニューから Vault を選択してください。"
+            case .summaryMissing:
+                return "要約ファイルがありません。エクスポートできるのは要約済みのアイテムのみです。"
+            case .fileOperationFailed(let message):
+                return "ファイル操作に失敗しました: \(message)"
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -496,6 +517,134 @@ class QueueManager: ObservableObject {
     /// Finderでフォルダを開く
     func openInFinder() {
         NSWorkspace.shared.open(baseFolder)
+    }
+
+    // -------------------------------------------------------------------------
+    // Obsidianエクスポート
+    // -------------------------------------------------------------------------
+
+    /// Obsidian vault 配下の Meetings フォルダURL（vault が未設定なら nil）
+    private func meetingsFolderURL() -> URL? {
+        guard let vaultPath = PostProcessingSettings.shared.obsidianVaultPath,
+              !vaultPath.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: vaultPath).appendingPathComponent("Meetings")
+    }
+
+    /// 既存プロジェクトフォルダ一覧（Meetings配下の直下サブディレクトリ）
+    private func existingProjects(in meetingsFolder: URL) -> [String] {
+        let fileManager = FileManager.default
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: meetingsFolder,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return entries.compactMap { url in
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            return (values?.isDirectory == true) ? url.lastPathComponent : nil
+        }.sorted()
+    }
+
+    /// ファイル名として安全な文字列に整形する
+    /// - ファイルシステムで問題になる記号を `_` に置換し、前後の空白・ドットを除去する
+    private func sanitizeFileName(_ input: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "/\\:*?\"<>|\n\r\t")
+        let replaced = String(input.unicodeScalars.map { scalar -> Character in
+            forbidden.contains(scalar) ? "_" : Character(scalar)
+        })
+        return replaced
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+
+    /// Obsidianへエクスポートする
+    /// - Parameter item: 対象アイテム（要約済みである必要あり）
+    /// - Returns: 移動後の要約ファイルURL
+    /// - Throws: `ExportError` または `PostProcessor.PostProcessingError`
+    func exportToObsidian(item: QueueItem) async throws -> URL {
+        // 事前チェック
+        guard let meetingsFolder = meetingsFolderURL() else {
+            throw ExportError.vaultNotSet
+        }
+        guard let summaryURL = item.summaryURL else {
+            throw ExportError.summaryMissing
+        }
+
+        await MainActor.run { self.exportingItemId = item.id }
+        defer {
+            Task { @MainActor in self.exportingItemId = nil }
+        }
+
+        let fileManager = FileManager.default
+
+        // Meetings フォルダを作成（なければ）
+        try fileManager.createDirectory(at: meetingsFolder, withIntermediateDirectories: true)
+
+        // 要約ファイルを読み込み
+        let summaryContent: String
+        do {
+            summaryContent = try String(contentsOf: summaryURL, encoding: .utf8)
+        } catch {
+            throw ExportError.fileOperationFailed("要約ファイルの読み込みに失敗: \(error.localizedDescription)")
+        }
+
+        // 既存プロジェクトを列挙
+        let existing = existingProjects(in: meetingsFolder)
+
+        // エージェントでエクスポート先を判定
+        let recordedDate = item.recordedAt ?? Date()
+        let destination = try await postProcessor.decideExportDestination(
+            summaryContent: summaryContent,
+            existingProjects: existing,
+            recordedDate: recordedDate,
+            workingDirectory: item.folderURL
+        )
+
+        let projectName = sanitizeFileName(destination.project)
+        let titlePart = sanitizeFileName(destination.title)
+        guard !projectName.isEmpty, !titlePart.isEmpty else {
+            throw ExportError.fileOperationFailed("エージェントが返したプロジェクト名または会議名が空です")
+        }
+
+        // プロジェクトフォルダを作成
+        let projectFolder = meetingsFolder.appendingPathComponent(projectName)
+        try fileManager.createDirectory(at: projectFolder, withIntermediateDirectories: true)
+
+        // ファイル名を生成（YYYY-MM-DD_{title}.md、衝突時は連番）
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let dateString = dateFormatter.string(from: recordedDate)
+        let baseName = "\(dateString)_\(titlePart)"
+        var destURL = projectFolder.appendingPathComponent("\(baseName).md")
+        var suffix = 2
+        while fileManager.fileExists(atPath: destURL.path) {
+            destURL = projectFolder.appendingPathComponent("\(baseName)_\(suffix).md")
+            suffix += 1
+        }
+
+        // 要約ファイルを移動
+        do {
+            try fileManager.moveItem(at: summaryURL, to: destURL)
+        } catch {
+            throw ExportError.fileOperationFailed("要約ファイルの移動に失敗: \(error.localizedDescription)")
+        }
+
+        // 元の録音フォルダを削除（音声・文字起こしも含めて一括削除）
+        do {
+            try fileManager.removeItem(at: item.folderURL)
+        } catch {
+            // 移動は成功したが元フォルダ削除失敗。警告のみ。
+            print("QueueManager: failed to remove source folder: \(error)")
+        }
+
+        await refreshQueue()
+
+        return destURL
     }
 
     /// 指定アイテムのフォルダをFinderで開く

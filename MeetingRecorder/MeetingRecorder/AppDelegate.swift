@@ -291,6 +291,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(summaryItem)
 
+        // 要約エンジンの選択サブメニュー
+        // 要約がOFFの場合はグレーアウト
+        let engineItem = NSMenuItem(
+            title: "  要約エンジン: \(settings.summaryEngine.displayName)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        let engineSubmenu = NSMenu(title: "要約エンジン")
+        for engine in [PostProcessingSettings.SummaryEngine.codex, .claudeCode] {
+            let item = NSMenuItem(
+                title: engine.displayName,
+                action: #selector(selectSummaryEngine(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = engine.rawValue
+            item.state = (settings.summaryEngine == engine) ? .on : .off
+            engineSubmenu.addItem(item)
+        }
+        engineItem.submenu = engineSubmenu
+        engineItem.isEnabled = settings.isSummaryEnabled
+        if !settings.isSummaryEnabled {
+            engineItem.attributedTitle = NSAttributedString(
+                string: "  要約エンジン: \(settings.summaryEngine.displayName)",
+                attributes: [.foregroundColor: NSColor.disabledControlTextColor]
+            )
+        }
+        menu.addItem(engineItem)
+
+        // Obsidian Vault 選択メニュー
+        let vaultTitle: String
+        if let vaultPath = settings.obsidianVaultPath {
+            let vaultName = (vaultPath as NSString).lastPathComponent
+            vaultTitle = "  Obsidian Vault: \(vaultName)"
+        } else {
+            vaultTitle = "  Obsidian Vault: 未設定"
+        }
+        let vaultItem = NSMenuItem(
+            title: vaultTitle,
+            action: #selector(selectObsidianVault),
+            keyEquivalent: ""
+        )
+        vaultItem.target = self
+        vaultItem.toolTip = settings.obsidianVaultPath
+        menu.addItem(vaultItem)
+
         // セパレーター（区切り線）を追加
         menu.addItem(NSMenuItem.separator())
 
@@ -625,6 +671,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 文字起こしが無効の場合は何もしない
         guard settings.isTranscriptionEnabled else { return }
         settings.isSummaryEnabled.toggle()
+        updateMenu()
+    }
+
+    /// 要約エンジンを切り替える
+    @objc private func selectSummaryEngine(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let engine = PostProcessingSettings.SummaryEngine(rawValue: raw) else {
+            return
+        }
+        PostProcessingSettings.shared.summaryEngine = engine
+        updateMenu()
+    }
+
+    /// Obsidian Vault を選択する（NSOpenPanelでフォルダ選択）
+    @objc private func selectObsidianVault() {
+        let panel = NSOpenPanel()
+        panel.title = "Obsidian Vault のフォルダを選択"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        if let current = PostProcessingSettings.shared.obsidianVaultPath {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = panel.runModal()
+        guard response == .OK, let url = panel.url else { return }
+
+        PostProcessingSettings.shared.obsidianVaultPath = url.path
         updateMenu()
     }
 

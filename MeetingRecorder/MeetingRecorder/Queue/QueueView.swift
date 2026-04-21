@@ -10,6 +10,15 @@ import AppKit
 struct QueueView: View {
     @ObservedObject var queueManager = QueueManager.shared
 
+    /// エクスポート確認中のアイテム
+    @State private var itemPendingExport: QueueItem?
+
+    /// エクスポート結果メッセージ（成功/失敗）
+    @State private var exportResultMessage: String?
+
+    /// エクスポート結果が失敗かどうか
+    @State private var exportResultIsError: Bool = false
+
     var body: some View {
         VStack(spacing: 0) {
             // ヘッダー
@@ -32,6 +41,54 @@ struct QueueView: View {
         .frame(minWidth: 500, minHeight: 400)
         .onAppear {
             queueManager.refreshQueue()
+        }
+        // エクスポート確認ダイアログ
+        .alert(
+            "Obsidianへエクスポート",
+            isPresented: Binding(
+                get: { itemPendingExport != nil },
+                set: { if !$0 { itemPendingExport = nil } }
+            ),
+            presenting: itemPendingExport
+        ) { item in
+            Button("キャンセル", role: .cancel) { itemPendingExport = nil }
+            Button("実行", role: .destructive) {
+                let target = item
+                itemPendingExport = nil
+                performExport(item: target)
+            }
+        } message: { item in
+            Text("「\(item.displayTitle)」の要約を Obsidian に移動し、録音・文字起こしを削除します。よろしいですか？")
+        }
+        // エクスポート結果表示
+        .alert(
+            exportResultIsError ? "エクスポート失敗" : "エクスポート完了",
+            isPresented: Binding(
+                get: { exportResultMessage != nil },
+                set: { if !$0 { exportResultMessage = nil } }
+            )
+        ) {
+            Button("OK") { exportResultMessage = nil }
+        } message: {
+            Text(exportResultMessage ?? "")
+        }
+    }
+
+    /// エクスポートを実行する
+    private func performExport(item: QueueItem) {
+        Task {
+            do {
+                let destURL = try await queueManager.exportToObsidian(item: item)
+                await MainActor.run {
+                    exportResultIsError = false
+                    exportResultMessage = "エクスポートしました:\n\(destURL.path)"
+                }
+            } catch {
+                await MainActor.run {
+                    exportResultIsError = true
+                    exportResultMessage = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -95,15 +152,18 @@ struct QueueView: View {
 
     private func queueItemRowView(for item: QueueItem) -> some View {
         let isProcessing = queueManager.processingItemId.map { $0 == item.id } ?? false
+        let isExporting = queueManager.exportingItemId.map { $0 == item.id } ?? false
         let isPending = queueManager.pendingTasks.contains(where: { $0.itemId == item.id })
         return QueueItemRow(
             item: item,
             isProcessing: isProcessing,
+            isExporting: isExporting,
             isPending: isPending,
             onTranscribe: { queueManager.transcribe(item: item) },
             onSummarize: { queueManager.summarize(item: item) },
             onProcessAll: { queueManager.processAll(item: item) },
             onDelete: { queueManager.deleteItem(item) },
+            onExport: { itemPendingExport = item },
             onOpenAudio: { NSWorkspace.shared.open(item.audioURL) },
             onOpenTranscript: {
                 if let url = item.transcriptURL {
@@ -180,11 +240,13 @@ struct QueueView: View {
 struct QueueItemRow: View {
     let item: QueueItem
     let isProcessing: Bool
+    let isExporting: Bool
     let isPending: Bool
     let onTranscribe: () -> Void
     let onSummarize: () -> Void
     let onProcessAll: () -> Void
     let onDelete: () -> Void
+    let onExport: () -> Void
     let onOpenAudio: () -> Void
     let onOpenTranscript: () -> Void
     let onOpenSummary: () -> Void
@@ -228,6 +290,12 @@ struct QueueItemRow: View {
                 ProgressView()
                     .controlSize(.small)
                 Text("処理中...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else if isExporting {
+                ProgressView()
+                    .controlSize(.small)
+                Text("エクスポート中...")
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else if isPending {
@@ -346,6 +414,15 @@ struct QueueItemRow: View {
                 .buttonStyle(.borderless)
                 .help("全て処理")
             }
+
+            // Obsidianへエクスポート（要約済みのみ）
+            if item.status == .summarized {
+                Button(action: onExport) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .help("Obsidianへエクスポート")
+            }
         }
     }
 
@@ -376,6 +453,11 @@ struct QueueItemRow: View {
 
             if item.needsTranscription || item.needsSummary {
                 Button("全て処理", action: onProcessAll)
+            }
+
+            if item.status == .summarized {
+                Divider()
+                Button("Obsidianへエクスポート", action: onExport)
             }
 
             Divider()
