@@ -2,7 +2,8 @@ import SwiftUI
 import AppKit
 
 struct ResizeHandle: View {
-    let onResize: (Int) -> Void
+    let onPreview: (Int) -> Void
+    let onCommit: (Int) -> Void
 
     @State private var cursorPushed = false
 
@@ -23,13 +24,22 @@ struct ResizeHandle: View {
                 }
             }
             .gesture(
-                DragGesture(minimumDistance: 2, coordinateSpace: .local)
+                DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                    .onChanged { value in
+                        onPreview(snappedMinutes(from: value.translation.height))
+                    }
                     .onEnded { value in
-                        let rows = Int((value.translation.height / AppTheme.slotRowHeight).rounded())
-                        let minutesDelta = rows * MinuteOfDay.slotLengthMinutes
-                        guard minutesDelta != 0 else { return }
-                        onResize(minutesDelta)
+                        let minutesDelta = snappedMinutes(from: value.translation.height)
+                        onCommit(minutesDelta)
                     }
             )
+    }
+
+    private func snappedMinutes(from height: CGFloat) -> Int {
+        let pixelsPerMinute = AppTheme.slotRowHeight / CGFloat(MinuteOfDay.slotLengthMinutes)
+        let rawMinutes = height / pixelsPerMinute
+        let snap = CGFloat(MinuteOfDay.snapGranularityMinutes)
+        let snapped = (rawMinutes / snap).rounded() * snap
+        return Int(snapped)
     }
 }

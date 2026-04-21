@@ -9,6 +9,7 @@ struct TimelineView: View {
     @State private var openEditorCount: Int = 0
 
     private let calendar = Calendar.current
+    private let laneSpacing: CGFloat = 2
 
     var body: some View {
         let range = store.rangeMinutes()
@@ -60,44 +61,69 @@ struct TimelineView: View {
 
     @ViewBuilder
     private func slotsColumn(ruler: TimeRuler) -> some View {
-        ZStack(alignment: .top) {
-            gridLines(ruler: ruler)
+        let laneMap = SlotLaneLayout.compute(slots: store.day.slots)
 
-            ForEach(ruler.rows) { row in
-                if !isCoveredByPrecedingSlot(minute: row.minute),
-                   slotStarting(at: row.minute) == nil {
-                    EmptySlotView(minute: row.minute) { minute in
-                        let created = store.ensureSlot(startingAt: minute)
-                        autoOpenSlotId = created.id
+        GeometryReader { geo in
+            let columnWidth = geo.size.width
+
+            ZStack(alignment: .topLeading) {
+                gridLines(ruler: ruler)
+
+                ForEach(ruler.rows) { row in
+                    if !isCoveredByPrecedingSlot(minute: row.minute),
+                       slotStarting(at: row.minute) == nil {
+                        EmptySlotView(minute: row.minute) { minute in
+                            let created = store.ensureSlot(startingAt: minute)
+                            autoOpenSlotId = created.id
+                        }
+                        .frame(width: columnWidth, height: AppTheme.slotRowHeight)
+                        .offset(y: offsetY(for: row.minute, ruler: ruler))
                     }
-                    .frame(height: AppTheme.slotRowHeight)
-                    .offset(y: offsetY(for: row.minute, ruler: ruler))
+                }
+
+                ForEach(store.day.slots) { slot in
+                    let duration = slotDurationMinutes(slot: slot)
+                    let lane = laneMap[slot.id] ?? SlotLaneInfo(lane: 0, totalLanes: 1)
+                    let (offsetX, width) = laneMetrics(laneInfo: lane, columnWidth: columnWidth)
+
+                    FilledSlotView(
+                        slot: slot,
+                        tag: store.tags.tag(for: slot.tagId),
+                        durationMinutes: duration,
+                        autoOpenSlotId: $autoOpenSlotId,
+                        openEditorCount: $openEditorCount,
+                        onCommit: { id, text, tagId, note in
+                            store.commit(slotId: id, text: text, tagId: tagId, note: note)
+                            store.autoMergeSameTagNeighbors(of: id)
+                        },
+                        onRequestSplit: { id in store.split(slotId: id) },
+                        onRequestMergeWithNext: { id in store.mergeWithNext(slotId: id) },
+                        onRequestResize: { id, delta in store.resize(slotId: id, minutesDelta: delta) },
+                        onRequestResizeStart: { id, delta in store.resizeStart(slotId: id, minutesDelta: delta) },
+                        onRequestMove: { id, deltaMinutes in
+                            let currentStart = MinuteOfDay.fromDate(slot.startAt, calendar: calendar)
+                            let newStart = currentStart.adding(minutes: deltaMinutes)
+                            store.move(slotId: id, toStartMinute: newStart)
+                        },
+                        onDelete: { id in store.delete(slotId: id) },
+                        tagLibrary: store.tags
+                    )
+                    .frame(width: width, height: pixelHeight(forMinutes: duration), alignment: .topLeading)
+                    .offset(x: offsetX, y: offsetY(forSlot: slot, ruler: ruler))
                 }
             }
-
-            ForEach(store.day.slots) { slot in
-                let span = slotRowSpan(slot: slot)
-                FilledSlotView(
-                    slot: slot,
-                    tag: store.tags.tag(for: slot.tagId),
-                    rowsSpanned: span,
-                    autoOpenSlotId: $autoOpenSlotId,
-                    openEditorCount: $openEditorCount,
-                    onCommit: { id, text, tagId, note in
-                        store.commit(slotId: id, text: text, tagId: tagId, note: note)
-                        store.autoMergeSameTagNeighbors(of: id)
-                    },
-                    onRequestSplit: { id in store.split(slotId: id) },
-                    onRequestMergeWithNext: { id in store.mergeWithNext(slotId: id) },
-                    onRequestResize: { id, delta in store.resize(slotId: id, minutesDelta: delta) },
-                    onDelete: { id in store.delete(slotId: id) },
-                    tagLibrary: store.tags
-                )
-                .frame(height: CGFloat(span) * AppTheme.slotRowHeight)
-                .offset(y: offsetY(forSlot: slot, ruler: ruler))
-            }
+            .frame(width: columnWidth, height: totalHeight(ruler: ruler), alignment: .topLeading)
         }
-        .frame(height: totalHeight(ruler: ruler), alignment: .top)
+        .frame(height: totalHeight(ruler: ruler))
+    }
+
+    private func laneMetrics(laneInfo: SlotLaneInfo, columnWidth: CGFloat) -> (offsetX: CGFloat, width: CGFloat) {
+        let n = max(1, laneInfo.totalLanes)
+        guard n > 1 else { return (0, columnWidth) }
+        let totalSpacing = laneSpacing * CGFloat(n - 1)
+        let laneWidth = (columnWidth - totalSpacing) / CGFloat(n)
+        let offsetX = CGFloat(laneInfo.lane) * (laneWidth + laneSpacing)
+        return (offsetX, laneWidth)
     }
 
     private func totalHeight(ruler: TimeRuler) -> CGFloat {
@@ -105,8 +131,12 @@ struct TimelineView: View {
     }
 
     private func offsetY(for minute: MinuteOfDay, ruler: TimeRuler) -> CGFloat {
-        let stepsFromStart = (minute.value - ruler.rows.first!.minute.value) / MinuteOfDay.slotLengthMinutes
-        return CGFloat(stepsFromStart) * AppTheme.slotRowHeight
+        let minutesFromStart = minute.value - ruler.rows.first!.minute.value
+        return pixelHeight(forMinutes: minutesFromStart)
+    }
+
+    private func pixelHeight(forMinutes minutes: Int) -> CGFloat {
+        CGFloat(minutes) / CGFloat(MinuteOfDay.slotLengthMinutes) * AppTheme.slotRowHeight
     }
 
     private func offsetY(forSlot slot: Slot, ruler: TimeRuler) -> CGFloat {
@@ -144,7 +174,7 @@ struct TimelineView: View {
         return store.day.slots.first { $0.startAt == target }
     }
 
-    private func slotRowSpan(slot: Slot) -> Int {
+    private func slotDurationMinutes(slot: Slot) -> Int {
         let startMinute = MinuteOfDay.fromDate(slot.startAt, calendar: calendar).value
         let endMinute: Int
         let endDay = DayDate(date: slot.endAt, calendar: calendar)
@@ -153,8 +183,7 @@ struct TimelineView: View {
         } else {
             endMinute = MinuteOfDay.dayEnd.value
         }
-        let minutes = max(MinuteOfDay.slotLengthMinutes, endMinute - startMinute)
-        return minutes / MinuteOfDay.slotLengthMinutes
+        return max(MinuteOfDay.snapGranularityMinutes, endMinute - startMinute)
     }
 
     private func isCoveredByPrecedingSlot(minute: MinuteOfDay) -> Bool {
