@@ -44,4 +44,7 @@ extension MinuteOfDay {
     static let defaultStart = MinuteOfDay(hour: 10, minute: 0)
     static let defaultEnd = MinuteOfDay(hour: 19, minute: 0)
     static let slotLengthMinutes = 30
+    /// Snap granularity for move/resize interactions. The display grid still uses
+    /// `slotLengthMinutes`, but users can position/resize slots at this finer grain.
+    static let snapGranularityMinutes = 15
 }

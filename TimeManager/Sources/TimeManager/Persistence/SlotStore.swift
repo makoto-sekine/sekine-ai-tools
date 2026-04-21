@@ -224,20 +224,47 @@ final class SlotStore: ObservableObject {
     }
 
     func resize(slotId: UUID, minutesDelta: Int) {
-        guard minutesDelta % MinuteOfDay.slotLengthMinutes == 0, minutesDelta != 0 else { return }
+        guard minutesDelta % MinuteOfDay.snapGranularityMinutes == 0, minutesDelta != 0 else { return }
         guard let index = day.slots.firstIndex(where: { $0.id == slotId }) else { return }
         let slot = day.slots[index]
         let newEnd = calendar.date(byAdding: .minute, value: minutesDelta, to: slot.endAt) ?? slot.endAt
         let newMinutes = Int(newEnd.timeIntervalSince(slot.startAt) / 60.0)
-        guard newMinutes >= MinuteOfDay.slotLengthMinutes else { return }
+        guard newMinutes >= MinuteOfDay.snapGranularityMinutes else { return }
 
-        if minutesDelta > 0 {
-            // Must not overlap with next slot
-            if index + 1 < day.slots.count, day.slots[index + 1].startAt < newEnd {
-                return
-            }
-        }
         day.slots[index].endAt = newEnd
+        expandRangeIfNeeded(toContain: MinuteOfDay.fromDate(newEnd, calendar: calendar))
+        persist()
+    }
+
+    /// Adjusts the slot's start time by `minutesDelta` (must be a multiple of the
+    /// slot length). Positive values move the start later (shrink from the top);
+    /// negative values move the start earlier (grow from the top).
+    func resizeStart(slotId: UUID, minutesDelta: Int) {
+        guard minutesDelta % MinuteOfDay.snapGranularityMinutes == 0, minutesDelta != 0 else { return }
+        guard let index = day.slots.firstIndex(where: { $0.id == slotId }) else { return }
+        let slot = day.slots[index]
+        let newStart = calendar.date(byAdding: .minute, value: minutesDelta, to: slot.startAt) ?? slot.startAt
+        let newMinutes = Int(slot.endAt.timeIntervalSince(newStart) / 60.0)
+        guard newMinutes >= MinuteOfDay.snapGranularityMinutes else { return }
+        guard DayDate(date: newStart, calendar: calendar) == currentDay else { return }
+
+        day.slots[index].startAt = newStart
+        expandRangeIfNeeded(toContain: MinuteOfDay.fromDate(newStart, calendar: calendar))
+        persist()
+    }
+
+    /// Moves a slot so its start is snapped to `newStartMinute`, preserving duration.
+    /// Overlaps with other slots are allowed (parallel lanes).
+    func move(slotId: UUID, toStartMinute newStartMinute: MinuteOfDay) {
+        guard let index = day.slots.firstIndex(where: { $0.id == slotId }) else { return }
+        let slot = day.slots[index]
+        let newStart = currentDay.date(at: newStartMinute, calendar: calendar)
+        guard newStart != slot.startAt else { return }
+        let duration = slot.endAt.timeIntervalSince(slot.startAt)
+        let newEnd = newStart.addingTimeInterval(duration)
+        day.slots[index].startAt = newStart
+        day.slots[index].endAt = newEnd
+        expandRangeIfNeeded(toContain: newStartMinute)
         expandRangeIfNeeded(toContain: MinuteOfDay.fromDate(newEnd, calendar: calendar))
         persist()
     }
