@@ -3,18 +3,24 @@ import SwiftUI
 struct SlotEditorView: View {
     let slot: Slot
     let tagLibrary: TagLibrary
-    let onCommit: (String, String?) -> Void
+    let onCommit: (String, String?, String) -> Void
     let onDelete: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var draftText: String
     @State private var draftTagId: String?
-    @FocusState private var focused: Bool
+    @State private var draftNote: String
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case text
+        case note
+    }
 
     init(
         slot: Slot,
         tagLibrary: TagLibrary,
-        onCommit: @escaping (String, String?) -> Void,
+        onCommit: @escaping (String, String?, String) -> Void,
         onDelete: @escaping () -> Void
     ) {
         self.slot = slot
@@ -23,6 +29,7 @@ struct SlotEditorView: View {
         self.onDelete = onDelete
         _draftText = State(initialValue: slot.text)
         _draftTagId = State(initialValue: slot.tagId)
+        _draftNote = State(initialValue: slot.note)
     }
 
     var body: some View {
@@ -32,7 +39,7 @@ struct SlotEditorView: View {
             TextField("内容を入力", text: $draftText)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 13))
-                .focused($focused)
+                .focused($focusedField, equals: .text)
                 .onSubmit {
                     commit()
                     dismiss()
@@ -45,6 +52,22 @@ struct SlotEditorView: View {
                 TagStripPicker(library: tagLibrary, selected: $draftTagId)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("メモ")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                MemoField(text: $draftNote)
+                    .frame(minHeight: 70, maxHeight: 140)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.25))
+                    )
+            }
+
             HStack {
                 Button(role: .destructive) {
                     onDelete()
@@ -53,14 +76,14 @@ struct SlotEditorView: View {
                     Label("削除", systemImage: "trash")
                 }
                 Spacer()
-                Text("Enter で保存")
+                Text("Enter で保存（メモ欄は改行）")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
         }
         .padding(16)
-        .frame(width: 320)
-        .onAppear { focused = true }
+        .frame(width: 340)
+        .onAppear { focusedField = .text }
         .onDisappear { commit() }
     }
 
@@ -94,6 +117,6 @@ struct SlotEditorView: View {
     }
 
     private func commit() {
-        onCommit(draftText, draftTagId)
+        onCommit(draftText, draftTagId, draftNote)
     }
 }

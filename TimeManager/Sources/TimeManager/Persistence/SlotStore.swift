@@ -134,16 +134,20 @@ final class SlotStore: ObservableObject {
 
     // MARK: - Commit / delete
 
-    func commit(slotId: UUID, text: String, tagId: String?) {
+    func commit(slotId: UUID, text: String, tagId: String?, note: String) {
         guard let index = day.slots.firstIndex(where: { $0.id == slotId }) else { return }
-        let trimmed = text
-        let shouldDelete = trimmed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (tagId == nil)
+        let trimmedText = text
+        let trimmedNote = note
+        let shouldDelete = trimmedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (tagId == nil)
+            && trimmedNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if shouldDelete {
             let removed = day.slots.remove(at: index)
             dayStore.moveToTrash(slot: removed, from: currentDay)
         } else {
-            day.slots[index].text = trimmed
+            day.slots[index].text = trimmedText
             day.slots[index].tagId = tagId
+            day.slots[index].note = trimmedNote
         }
         persist()
     }

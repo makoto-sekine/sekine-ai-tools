@@ -27,6 +27,9 @@ targets:
     platform: macOS
     sources:
       - path: Sources/TimeManager
+        excludes:
+          - "Info.plist"
+          - "TimeManager.entitlements"
     resources:
       - path: Resources
         optional: true

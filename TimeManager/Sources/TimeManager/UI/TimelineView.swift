@@ -6,6 +6,7 @@ struct TimelineView: View {
 
     @State private var showDatePicker: Bool = false
     @State private var autoOpenSlotId: UUID?
+    @State private var openEditorCount: Int = 0
 
     private let calendar = Calendar.current
 
@@ -17,6 +18,7 @@ struct TimelineView: View {
             DayHeaderView(
                 displayDay: store.currentDay,
                 isToday: store.currentDay == .today(calendar: calendar),
+                arrowShortcutEnabled: openEditorCount == 0 && !showDatePicker,
                 onPrev: { store.goToPreviousDay() },
                 onNext: { store.goToNextDay() },
                 onToday: { store.goToToday() },
@@ -80,8 +82,9 @@ struct TimelineView: View {
                     tag: store.tags.tag(for: slot.tagId),
                     rowsSpanned: span,
                     autoOpenSlotId: $autoOpenSlotId,
-                    onCommit: { id, text, tagId in
-                        store.commit(slotId: id, text: text, tagId: tagId)
+                    openEditorCount: $openEditorCount,
+                    onCommit: { id, text, tagId, note in
+                        store.commit(slotId: id, text: text, tagId: tagId, note: note)
                         store.autoMergeSameTagNeighbors(of: id)
                     },
                     onRequestSplit: { id in store.split(slotId: id) },
